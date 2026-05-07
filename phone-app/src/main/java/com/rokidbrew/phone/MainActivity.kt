@@ -270,7 +270,6 @@ class MainActivity : AppCompatActivity() {
                 apps = refresh.apps
                 warmAssets(refresh.apps)
                 installCheckTick += 1
-                if (cxrL.hasAuthorization()) refreshGlassesInstallStates(refresh.apps)
                 val remoteCode = refresh.brewVersionCode ?: 0L
                 if (remoteCode > BuildConfig.VERSION_CODE && !refresh.brewApkUrl.isNullOrBlank()) {
                     updateAvailable = true
@@ -332,7 +331,6 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == CxrLHiRokidSession.AUTH_REQUEST_CODE) {
             cxrL.handleAuthorizationResult(resultCode, data)
-            refreshGlassesInstallStates(apps)
         }
     }
 

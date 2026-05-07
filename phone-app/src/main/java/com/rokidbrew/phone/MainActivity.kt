@@ -2,14 +2,18 @@ package com.rokidbrew.phone
 
 import android.Manifest
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -26,6 +30,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -54,7 +59,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessibilityNew
 import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ElectricScooter
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
@@ -78,6 +82,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -97,9 +102,12 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.fontResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -110,13 +118,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -137,6 +145,7 @@ class MainActivity : AppCompatActivity() {
     private var statusExpanded by mutableStateOf(false)
     private var statusLines by mutableStateOf(listOf("Ready."))
     private val downloadProgress = mutableStateMapOf<String, Int>()
+    private val glassesInstallStates = mutableStateMapOf<String, InstallState>()
     private var pendingAction: (() -> Unit)? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
@@ -156,6 +165,13 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             if (isBluetoothEnabled()) consumePendingAction() else log("Bluetooth is still disabled.")
         }
+
+    private val phoneInstallStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            intent.getStringExtra(PhoneInstallResultReceiver.EXTRA_MESSAGE)?.let(::log)
+            installCheckTick += 1
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -180,12 +196,12 @@ class MainActivity : AppCompatActivity() {
                     statusLines = statusLines,
                     statusExpanded = statusExpanded,
                     downloadProgress = downloadProgress,
+                    glassesInstallStates = glassesInstallStates,
                     iconLoader = iconLoader,
                     mediaLoader = mediaLoader,
                     onToggleStatus = { statusExpanded = !statusExpanded },
                     onRefresh = { refreshStoreIndex(manual = true) },
                     onAuthorize = { runWithPrerequisites { cxrL.requestAuthorization() } },
-                    onPushBrew = { runWithPrerequisites { installBundledBrewGlasses() } },
                     onInstall = { app, target ->
                         if (target == "glasses") {
                             runWithPrerequisites { installArtifact(app, target) }
@@ -198,7 +214,23 @@ class MainActivity : AppCompatActivity() {
         }
         warmAssets(apps)
         refreshStoreIndex(manual = false)
-        log("Ready. Authorize Hi Rokid before pushing to glasses.")
+        log("Ready. Authorize Hi Rokid before installing glasses APKs.")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(PhoneInstallResultReceiver.ACTION_PHONE_INSTALL_STATUS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(phoneInstallStatusReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(phoneInstallStatusReceiver, filter)
+        }
+    }
+
+    override fun onStop() {
+        runCatching { unregisterReceiver(phoneInstallStatusReceiver) }
+        super.onStop()
     }
 
     override fun onResume() {
@@ -217,6 +249,7 @@ class MainActivity : AppCompatActivity() {
                 apps = refresh.apps
                 warmAssets(refresh.apps)
                 installCheckTick += 1
+                if (cxrL.hasAuthorization()) refreshGlassesInstallStates(refresh.apps)
                 log("Store registry updated (${refresh.apps.size} apps).")
             }.onFailure { error ->
                 log("Remote registry unavailable: ${error.message ?: error.javaClass.simpleName}")
@@ -248,25 +281,26 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == CxrLHiRokidSession.AUTH_REQUEST_CODE) {
             cxrL.handleAuthorizationResult(resultCode, data)
+            refreshGlassesInstallStates(apps)
         }
     }
 
-    private fun installBundledBrewGlasses() {
-        if (busy) return
-        lifecycleScope.launch {
-            updateBusy(true)
-            runCatching {
-                val file = File(cacheDir, "RokidBrew-glasses-v0.1.0-debug.apk")
-                assets.open("bootstrap/RokidBrew-glasses-v0.1.0-debug.apk").use { input ->
-                    file.outputStream().use { output -> input.copyTo(output) }
-                }
-                log("Bundled RokidBrew Glasses staged (${file.length() / 1024} KB).")
-                cxrL.installApk(file)
-            }.onFailure { error ->
-                log("Bootstrap failed: ${error.message ?: error.javaClass.simpleName}")
-                updateBusy(false)
-            }
-        }
+    private fun refreshGlassesInstallStates(targetApps: List<BrewApp> = apps) {
+        val packageNames = targetApps
+            .mapNotNull { it.artifactFor("glasses")?.packageName?.takeIf(String::isNotBlank) }
+            .distinct()
+        if (packageNames.isEmpty() || !cxrL.hasAuthorization()) return
+
+        cxrL.queryInstalledApps(
+            packageNames = packageNames,
+            onResult = { packageName, installed ->
+                glassesInstallStates[packageName] = if (installed) InstallState.INSTALLED else InstallState.NOT_INSTALLED
+                installCheckTick += 1
+            },
+            onComplete = {
+                log("Glasses install states refreshed.")
+            },
+        )
     }
 
     private fun installArtifact(app: BrewApp, target: String) {
@@ -291,7 +325,12 @@ class MainActivity : AppCompatActivity() {
                 downloadProgress[progressKey] = 100
                 log("Downloaded ${file.name} (${file.length() / 1024} KB).")
                 if (target == "glasses") {
-                    cxrL.installApk(file)
+                    cxrL.installApk(file) { installed ->
+                        artifact.packageName?.takeIf { it.isNotBlank() }?.let {
+                            glassesInstallStates[it] = if (installed) InstallState.INSTALLED else InstallState.NOT_INSTALLED
+                            installCheckTick += 1
+                        }
+                    }
                 } else {
                     updateBusy(false)
                     downloadProgress.remove(progressKey)
@@ -352,12 +391,12 @@ private fun BrewPhoneApp(
     statusLines: List<String>,
     statusExpanded: Boolean,
     downloadProgress: Map<String, Int>,
+    glassesInstallStates: Map<String, MainActivity.InstallState>,
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
     onToggleStatus: () -> Unit,
     onRefresh: () -> Unit,
     onAuthorize: () -> Unit,
-    onPushBrew: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
 ) {
     var activeSection by rememberSaveable { mutableStateOf(SectionUi.PHONE) }
@@ -366,6 +405,10 @@ private fun BrewPhoneApp(
     var selectedApp by remember { mutableStateOf<BrewApp?>(null) }
     val scrollState = rememberScrollState()
     val uiScope = rememberCoroutineScope()
+
+    BackHandler(enabled = selectedApp != null) {
+        selectedApp = null
+    }
 
     val sectionApps = remember(apps, activeSection) {
         apps.filter { app ->
@@ -380,6 +423,7 @@ private fun BrewPhoneApp(
             val categoryOk = categoryFilter == null || app.category.equals(categoryFilter, ignoreCase = true)
             val searchOk = query.isBlank() ||
                 app.name.contains(query, ignoreCase = true) ||
+                app.author.contains(query, ignoreCase = true) ||
                 app.category.contains(query, ignoreCase = true) ||
                 app.summary.contains(query, ignoreCase = true) ||
                 app.description.contains(query, ignoreCase = true)
@@ -413,7 +457,6 @@ private fun BrewPhoneApp(
                 busy = busy,
                 refreshing = refreshing,
                 onAuthorize = onAuthorize,
-                onPushBrew = onPushBrew,
                 onRefresh = onRefresh,
                 onReset = {
                     categoryFilter = null
@@ -456,6 +499,7 @@ private fun BrewPhoneApp(
                 busy = busy,
                 progress = downloadProgress,
                 installCheckTick = installCheckTick,
+                glassesInstallStates = glassesInstallStates,
                 onOpen = { selectedApp = it },
             )
         }
@@ -480,6 +524,7 @@ private fun BrewPhoneApp(
                 iconLoader = iconLoader,
                 mediaLoader = mediaLoader,
                 installCheckTick = installCheckTick,
+                glassesInstallStates = glassesInstallStates,
                 onDismiss = { selectedApp = null },
                 onInstall = { app, target ->
                     selectedApp = null
@@ -495,7 +540,6 @@ private fun Header(
     busy: Boolean,
     refreshing: Boolean,
     onAuthorize: () -> Unit,
-    onPushBrew: () -> Unit,
     onRefresh: () -> Unit,
     onReset: () -> Unit,
 ) {
@@ -546,15 +590,7 @@ private fun Header(
                 enabled = !busy,
                 icon = { Icon(Icons.Outlined.Security, null, modifier = Modifier.size(22.dp)) },
                 onClick = onAuthorize,
-                modifier = Modifier.weight(1f),
-            )
-            BrewButton(
-                label = "Push Brew",
-                primary = true,
-                enabled = !busy,
-                icon = { Icon(Icons.Outlined.CloudUpload, null, modifier = Modifier.size(22.dp)) },
-                onClick = onPushBrew,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
@@ -837,7 +873,10 @@ private fun CategorySheet(
     onDismiss: () -> Unit,
     onSelect: (String?) -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -977,6 +1016,7 @@ private fun AppShelf(
     busy: Boolean,
     progress: Map<String, Int>,
     installCheckTick: Int,
+    glassesInstallStates: Map<String, MainActivity.InstallState>,
     onOpen: (BrewApp) -> Unit,
 ) {
     SectionHeader(title = title, action = "${apps.size} apps", modifier = Modifier.padding(top = 24.dp))
@@ -996,6 +1036,7 @@ private fun AppShelf(
                 busy = busy,
                 progress = appProgress(app, progress),
                 installCheckTick = installCheckTick,
+                glassesInstallStates = glassesInstallStates,
                 onOpen = { onOpen(app) },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1011,12 +1052,15 @@ private fun AppCard(
     busy: Boolean,
     progress: Int?,
     installCheckTick: Int,
+    glassesInstallStates: Map<String, MainActivity.InstallState>,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val painter = rememberAppPainter(app = app, iconLoader = iconLoader, mediaLoader = mediaLoader, preferScreenshot = false)
     val alpha by animateFloatAsState(if (busy && progress == null) 0.52f else 1f, label = "cardAlpha")
     val phoneInstallState = if (app.hasTarget("phone")) rememberInstallState(app, "phone", installCheckTick) else MainActivity.InstallState.UNKNOWN
+    val glassesInstallState = rememberGlassesInstallState(app, glassesInstallStates)
+    val displayInstallState = if (glassesInstallState != MainActivity.InstallState.UNKNOWN) glassesInstallState else phoneInstallState
     val fontScale = LocalDensity.current.fontScale
     fun fixedSp(value: Float) = (value / fontScale.coerceAtLeast(1f)).sp
     Card(
@@ -1065,10 +1109,10 @@ private fun AppCard(
                 Icon(Icons.Outlined.KeyboardArrowRight, null, tint = BrewMuted, modifier = Modifier.size(22.dp))
             }
             if (progress != null) {
-                ProgressLine(progress, Modifier.align(Alignment.BottomEnd).width(86.dp))
+                CompactProgressLine(progress, Modifier.align(Alignment.BottomEnd).width(112.dp))
             }
             InstallStateBadge(
-                state = phoneInstallState,
+                state = displayInstallState,
                 modifier = Modifier.align(Alignment.TopEnd),
             )
         }
@@ -1121,11 +1165,16 @@ private fun DetailSheet(
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
     installCheckTick: Int,
+    glassesInstallStates: Map<String, MainActivity.InstallState>,
     onDismiss: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
 ) {
     if (app == null) return
+    var expandedScreenshot by remember(app.id) { mutableStateOf<BrewScreenshot?>(null) }
     val phoneInstallState = if (app.hasTarget("phone")) rememberInstallState(app, "phone", installCheckTick) else MainActivity.InstallState.UNKNOWN
+    val glassesInstallState = rememberGlassesInstallState(app, glassesInstallStates)
+    val configuration = LocalConfiguration.current
+    val sheetMaxHeight = (configuration.screenHeightDp.dp - 28.dp).coerceAtMost(720.dp)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1141,8 +1190,9 @@ private fun DetailSheet(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = sheetMaxHeight)
                     .navigationBarsPadding()
-                    .padding(12.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -1154,9 +1204,7 @@ private fun DetailSheet(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 760.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(18.dp)
+                        .padding(14.dp)
                         .animateContentSize(),
                 ) {
                     Box(
@@ -1167,16 +1215,27 @@ private fun DetailSheet(
                             .clip(RoundedCornerShape(2.dp))
                             .background(BrewDim),
                     )
-                    ScreenshotPager(app = app, mediaLoader = mediaLoader)
+                    ScreenshotPager(
+                        app = app,
+                        mediaLoader = mediaLoader,
+                        onScreenshotClick = { expandedScreenshot = it },
+                    )
                     Row(
-                        modifier = Modifier.padding(top = 16.dp),
+                        modifier = Modifier.padding(top = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AppIcon(app, iconLoader, mediaLoader, Modifier.size(62.dp))
-                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
-                            Text(app.name, color = BrewTextBright, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        AppIcon(app, iconLoader, mediaLoader, Modifier.size(50.dp))
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
                             Text(
-                                "${app.category} / ${app.type} / v${app.version}",
+                                app.name,
+                                color = BrewTextBright,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "${app.category} / ${app.author} / v${app.version}",
                                 color = BrewGreen,
                                 fontSize = 12.sp,
                                 maxLines = 1,
@@ -1184,23 +1243,26 @@ private fun DetailSheet(
                             )
                         }
                     }
-                    TargetTags(app, Modifier.padding(top = 12.dp))
+                    TargetTags(app, Modifier.padding(top = 8.dp))
+                    SourceLine(app, Modifier.padding(top = 8.dp))
                     Text(
                         app.description,
                         color = BrewText,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp,
-                        modifier = Modifier.padding(top = 16.dp),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 10.dp),
                     )
                     val phoneProgress = progress["${app.id}:phone"]
                     val glassesProgress = progress["${app.id}:glasses"]
                     if (phoneProgress != null || glassesProgress != null) {
-                        ProgressLine(phoneProgress ?: glassesProgress ?: 0, Modifier.padding(top = 16.dp))
+                        ProgressLine(phoneProgress ?: glassesProgress ?: 0, Modifier.padding(top = 10.dp))
                     }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 18.dp),
+                            .padding(top = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         if (app.hasTarget("phone")) {
@@ -1214,9 +1276,9 @@ private fun DetailSheet(
                         }
                         if (app.hasTarget("glasses")) {
                             BrewButton(
-                                label = "Install glasses",
+                                label = installButtonLabel("glasses", glassesInstallState),
                                 primary = true,
-                                enabled = !busy,
+                                enabled = !busy && glassesInstallState != MainActivity.InstallState.INSTALLED,
                                 onClick = { onInstall(app, "glasses") },
                                 modifier = Modifier.weight(1f),
                             )
@@ -1225,22 +1287,79 @@ private fun DetailSheet(
                 }
             }
         }
+
+        expandedScreenshot?.let { screenshot ->
+            ScreenshotViewerDialog(
+                app = app,
+                screenshot = screenshot,
+                mediaLoader = mediaLoader,
+                onDismiss = { expandedScreenshot = null },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceLine(app: BrewApp, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BrewBg.copy(alpha = 0.46f))
+            .border(1.dp, BrewBorder, RoundedCornerShape(10.dp))
+            .clickable(enabled = app.sourceUrl != null) {
+                app.sourceUrl?.let { sourceUrl ->
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(sourceUrl)))
+                    }
+                }
+            }
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Author", color = BrewMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            app.author,
+            color = BrewTextBright,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(0.42f),
+        )
+        app.sourceUrl?.let { sourceUrl ->
+            Spacer(Modifier.width(8.dp))
+            Text(
+                sourceUrl.removePrefix("https://"),
+                color = BrewGreen,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(0.58f),
+            )
+        }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ScreenshotPager(app: BrewApp, mediaLoader: MediaLoader) {
+private fun ScreenshotPager(
+    app: BrewApp,
+    mediaLoader: MediaLoader,
+    onScreenshotClick: (BrewScreenshot) -> Unit,
+) {
     if (app.screenshotCount == 0) return
     val pagerState = rememberPagerState(pageCount = { app.screenshotCount })
-    Column(modifier = Modifier.padding(top = 16.dp)) {
+    Column(modifier = Modifier.padding(top = 10.dp)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(392.dp)
-                .clip(RoundedCornerShape(18.dp))
+                .height(230.dp)
+                .clip(RoundedCornerShape(14.dp))
                 .background(Color.Black.copy(alpha = 0.42f))
-                .border(1.dp, BrewBorderHi, RoundedCornerShape(18.dp)),
+                .border(1.dp, BrewBorderHi, RoundedCornerShape(14.dp)),
         ) {
             HorizontalPager(
                 state = pagerState,
@@ -1255,6 +1374,7 @@ private fun ScreenshotPager(app: BrewApp, mediaLoader: MediaLoader) {
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
+                            .clickable { onScreenshotClick(screenshotRef) }
                             .padding(8.dp),
                     )
                 } else {
@@ -1281,9 +1401,9 @@ private fun ScreenshotPager(app: BrewApp, mediaLoader: MediaLoader) {
         }
         if (app.screenshotCount > 1) {
             Row(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .padding(top = 10.dp),
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                    .padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 repeat(app.screenshotCount) { index ->
@@ -1300,6 +1420,72 @@ private fun ScreenshotPager(app: BrewApp, mediaLoader: MediaLoader) {
 }
 
 @Composable
+private fun ScreenshotViewerDialog(
+    app: BrewApp,
+    screenshot: BrewScreenshot,
+    mediaLoader: MediaLoader,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        var scale by remember(screenshot.assetName, screenshot.url) { mutableStateOf(1f) }
+        var offset by remember(screenshot.assetName, screenshot.url) { mutableStateOf(Offset.Zero) }
+        val painter = rememberScreenshotPainter(screenshot.assetName, screenshot.url, mediaLoader)
+
+        BackHandler(onBack = onDismiss)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.94f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (painter != null) {
+                Image(
+                    painter = painter,
+                    contentDescription = "${app.name} screenshot fullscreen",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) {}
+                        .pointerInput(screenshot.assetName, screenshot.url) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val nextScale = (scale * zoom).coerceIn(1f, 4f)
+                                scale = nextScale
+                                offset = if (nextScale == 1f) Offset.Zero else offset + pan
+                            }
+                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        },
+                )
+            } else {
+                Text("Loading preview", color = BrewTextBright, fontSize = 14.sp)
+            }
+            Text(
+                "Back to close",
+                color = BrewMuted,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 18.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun StatusDock(
     statusLines: List<String>,
     expanded: Boolean,
@@ -1307,12 +1493,15 @@ private fun StatusDock(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val logScrollState = rememberScrollState()
+    LaunchedEffect(expanded, statusLines.size) {
+        if (expanded) logScrollState.animateScrollTo(logScrollState.maxValue)
+    }
     Card(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp)
-            .clickable(onClick = onToggle),
+            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = BrewPanel.copy(alpha = 0.96f)),
         border = BorderStroke(1.dp, BrewBorderHi),
@@ -1321,6 +1510,7 @@ private fun StatusDock(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(onClick = onToggle)
                     .padding(horizontal = 26.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1346,15 +1536,32 @@ private fun StatusDock(
                     Text("BUSY", color = BrewAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
-            Text(
-                text = statusLines.takeLast(if (expanded) 12 else 2).joinToString("\n"),
-                color = BrewMuted,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                maxLines = if (expanded) 8 else 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 26.dp, end = 18.dp, bottom = 10.dp),
-            )
+            if (expanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 84.dp, max = 188.dp)
+                        .padding(start = 26.dp, end = 18.dp, bottom = 10.dp)
+                        .verticalScroll(logScrollState),
+                ) {
+                    Text(
+                        text = statusLines.joinToString("\n"),
+                        color = BrewMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            } else {
+                Text(
+                    text = statusLines.takeLast(2).joinToString("\n"),
+                    color = BrewMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 26.dp, end = 18.dp, bottom = 10.dp),
+                )
+            }
         }
     }
 }
@@ -1442,6 +1649,15 @@ private fun InstallStateBadge(state: MainActivity.InstallState, modifier: Modifi
         MainActivity.InstallState.UPDATE_AVAILABLE -> Badge("UPDATE", modifier)
         else -> Unit
     }
+}
+
+@Composable
+private fun rememberGlassesInstallState(
+    app: BrewApp,
+    glassesInstallStates: Map<String, MainActivity.InstallState>,
+): MainActivity.InstallState {
+    val packageName = app.artifactFor("glasses")?.packageName?.takeIf { it.isNotBlank() }
+    return packageName?.let { glassesInstallStates[it] } ?: MainActivity.InstallState.UNKNOWN
 }
 
 @Composable
@@ -1554,6 +1770,37 @@ private fun ProgressLine(progress: Int, modifier: Modifier = Modifier) {
                     .background(BrewGreen),
             )
         }
+    }
+}
+
+@Composable
+private fun CompactProgressLine(progress: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(5.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(BrewBorder),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth((progress.coerceIn(0, 100) / 100f).coerceAtLeast(0.02f))
+                    .height(5.dp)
+                    .background(BrewGreen),
+            )
+        }
+        Text(
+            "$progress%",
+            color = BrewGreen,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
     }
 }
 

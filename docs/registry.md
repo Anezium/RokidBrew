@@ -11,16 +11,13 @@ RokidBrew uses a remote registry so apps can be added or updated without shippin
 
 The UI always has an immediate local list, then updates itself when the remote registry is available.
 
-## Registry endpoints
+## Registry endpoint
 
-The phone app tries:
+The phone app fetches:
 
 ```text
-https://anezium.github.io/RokidBrew-Registry/apps.v1.json
 https://raw.githubusercontent.com/Anezium/RokidBrew-Registry/main/dist/apps.v1.json
 ```
-
-The GitHub Pages endpoint is preferred. The raw GitHub endpoint is the fallback.
 
 ## Registry repo
 

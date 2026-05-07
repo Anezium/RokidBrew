@@ -45,15 +45,17 @@ object PhonePackageInstallHelper {
                 } else {
                     PendingIntent.FLAG_UPDATE_CURRENT
                 }
-                val intent = PendingIntent.getActivity(
+                val intent = PendingIntent.getBroadcast(
                     context,
                     sessionId,
-                    Intent(context, MainActivity::class.java),
+                    Intent(context, PhoneInstallResultReceiver::class.java),
                     flags,
                 )
                 session.commit(intent.intentSender)
             }
-            onStatus("Phone PackageInstaller started.")
+            onStatus("Phone install session committed. Waiting for confirmation...")
+        }.onFailure { error ->
+            onStatus("Phone PackageInstaller failed: ${error.message ?: error.javaClass.simpleName}")
         }.isSuccess
     }
 }

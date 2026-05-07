@@ -19,6 +19,7 @@ import java.io.File
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.ArrayDeque
 
 class CxrLHiRokidSession(
     private val activity: AppCompatActivity,
@@ -38,10 +39,18 @@ class CxrLHiRokidSession(
     private var token: String? = null
     private var cxrLink: CXRLink? = null
     private var pendingUpload: File? = null
+    private var pendingInstallResult: ((Boolean) -> Unit)? = null
+    private var pendingQueryPackage: String? = null
+    private var queryQueue: ArrayDeque<String> = ArrayDeque()
+    private var onQueryResult: ((String, Boolean) -> Unit)? = null
+    private var onQueryComplete: (() -> Unit)? = null
     private var cxrlConnected = false
     private var glassBtConnected = false
     private var uploadStarted = false
+    private var queryStarted = false
     private var timeoutJob: Job? = null
+
+    fun hasAuthorization(): Boolean = !token.isNullOrBlank()
 
     fun requestAuthorization() {
         if (!isGlobalHiRokidInstalled()) {
@@ -74,19 +83,22 @@ class CxrLHiRokidSession(
         }
     }
 
-    fun installApk(apkFile: File) {
+    fun installApk(apkFile: File, onInstallResult: ((Boolean) -> Unit)? = null) {
         if (!isGlobalHiRokidInstalled()) {
             onStatus("Install global Hi Rokid on this phone first.")
+            onInstallResult?.invoke(false)
             return
         }
         if (!isWifiEnabled()) {
             onStatus("Turn on phone Wi-Fi first. Hi Rokid needs it for the glasses hotspot.")
+            onInstallResult?.invoke(false)
             return
         }
         val authToken = token
         if (authToken.isNullOrBlank()) {
             onStatus("Press Authorize Hi Rokid first.")
             requestAuthorization()
+            onInstallResult?.invoke(false)
             return
         }
 
@@ -94,11 +106,47 @@ class CxrLHiRokidSession(
         runCatching {
             val packageName = readPackageName(apkFile)
             onStatus("Detected package: $packageName")
-            connectAndUpload(authToken, packageName, apkFile)
+            connectAndUpload(authToken, packageName, apkFile, onInstallResult)
         }.onFailure { error ->
             onStatus("CXR-L failed: ${error.message ?: error.javaClass.simpleName}")
             onBusyChanged(false)
+            onInstallResult?.invoke(false)
         }
+    }
+
+    fun queryInstalledApps(
+        packageNames: List<String>,
+        onResult: (String, Boolean) -> Unit,
+        onComplete: () -> Unit,
+    ) {
+        if (packageNames.isEmpty()) {
+            onComplete()
+            return
+        }
+        if (!isGlobalHiRokidInstalled()) {
+            onStatus("Install global Hi Rokid on this phone first.")
+            onComplete()
+            return
+        }
+        if (!isWifiEnabled()) {
+            onStatus("Turn on phone Wi-Fi first. Hi Rokid needs it for the glasses hotspot.")
+            onComplete()
+            return
+        }
+        val authToken = token
+        if (authToken.isNullOrBlank()) {
+            onStatus("Press Authorize Hi Rokid first.")
+            requestAuthorization()
+            onComplete()
+            return
+        }
+
+        cleanup()
+        queryQueue = ArrayDeque(packageNames.distinct())
+        onQueryResult = onResult
+        onQueryComplete = onComplete
+        onBusyChanged(true)
+        queryNext(authToken)
     }
 
     fun cleanup() {
@@ -107,12 +155,20 @@ class CxrLHiRokidSession(
         runCatching { cxrLink?.disconnect() }
         cxrLink = null
         pendingUpload = null
+        pendingInstallResult = null
+        pendingQueryPackage = null
         cxrlConnected = false
         glassBtConnected = false
         uploadStarted = false
+        queryStarted = false
     }
 
-    private fun connectAndUpload(authToken: String, packageName: String, apkFile: File) {
+    private fun connectAndUpload(
+        authToken: String,
+        packageName: String,
+        apkFile: File,
+        onInstallResult: ((Boolean) -> Unit)?,
+    ) {
         cleanup()
         val link = CXRLink(activity.applicationContext).also { newLink ->
             newLink.setCXRLinkCbk(object : ICXRLinkCbk {
@@ -140,15 +196,19 @@ class CxrLHiRokidSession(
         }
 
         pendingUpload = apkFile
+        pendingInstallResult = onInstallResult
+        pendingQueryPackage = null
         cxrlConnected = false
         glassBtConnected = false
         uploadStarted = false
+        queryStarted = false
         timeoutJob = activity.lifecycleScope.launch {
             delay(90_000)
             if (pendingUpload != null) {
                 onStatus("Timed out waiting for Hi Rokid install result.")
                 cleanup()
                 onBusyChanged(false)
+                onInstallResult?.invoke(false)
             }
         }
 
@@ -159,6 +219,7 @@ class CxrLHiRokidSession(
             pendingUpload = null
             onBusyChanged(false)
             onStatus("Failed to configure CXR-L CUSTOMAPP session.")
+            onInstallResult?.invoke(false)
             return
         }
 
@@ -167,6 +228,72 @@ class CxrLHiRokidSession(
             pendingUpload = null
             onBusyChanged(false)
             onStatus("Hi Rokid service bind failed. Open Hi Rokid, then retry.")
+            onInstallResult?.invoke(false)
+        }
+    }
+
+    private fun queryNext(authToken: String) {
+        val packageName = queryQueue.pollFirst()
+        if (packageName == null) {
+            finishQueries()
+            return
+        }
+        connectAndQuery(authToken, packageName)
+    }
+
+    private fun connectAndQuery(authToken: String, packageName: String) {
+        cleanup()
+        val link = CXRLink(activity.applicationContext).also { newLink ->
+            newLink.setCXRLinkCbk(object : ICXRLinkCbk {
+                override fun onCXRLConnected(connected: Boolean) {
+                    activity.runOnUiThread {
+                        cxrlConnected = connected
+                        maybeQueryPending()
+                    }
+                }
+
+                override fun onGlassBtConnected(connected: Boolean) {
+                    activity.runOnUiThread {
+                        glassBtConnected = connected
+                        maybeQueryPending()
+                    }
+                }
+
+                override fun onGlassAiAssistStart() = Unit
+                override fun onGlassAiAssistStop() = Unit
+            })
+            cxrLink = newLink
+            newLink
+        }
+
+        pendingQueryPackage = packageName
+        pendingUpload = null
+        cxrlConnected = false
+        glassBtConnected = false
+        uploadStarted = false
+        queryStarted = false
+        timeoutJob = activity.lifecycleScope.launch {
+            delay(30_000)
+            if (pendingQueryPackage == packageName) {
+                onStatus("Timed out querying $packageName.")
+                onQueryResult?.invoke(packageName, false)
+                queryNext(authToken)
+            }
+        }
+
+        val configured = link.configCXRSession(
+            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, packageName),
+        )
+        if (!configured) {
+            onStatus("Failed to configure query for $packageName.")
+            onQueryResult?.invoke(packageName, false)
+            queryNext(authToken)
+            return
+        }
+
+        if (!bindGlobalHiRokidService(link, authToken)) {
+            onStatus("Hi Rokid service bind failed. Open Hi Rokid, then retry.")
+            finishQueries()
         }
     }
 
@@ -185,6 +312,8 @@ class CxrLHiRokidSession(
                     uploadStarted = false
                     onStatus(if (success) "Glasses install succeeded." else "Glasses install failed.")
                     onBusyChanged(false)
+                    pendingInstallResult?.invoke(success)
+                    pendingInstallResult = null
                 }
             }
 
@@ -194,6 +323,39 @@ class CxrLHiRokidSession(
             override fun onGlassAppResume(resumed: Boolean) = Unit
             override fun onQueryAppResult(installed: Boolean) = Unit
         })
+    }
+
+    private fun maybeQueryPending() {
+        val packageName = pendingQueryPackage ?: return
+        if (queryStarted || !cxrlConnected || !glassBtConnected) return
+
+        queryStarted = true
+        cxrLink?.appIsInstalled(object : IGlassAppCbk {
+            override fun onInstallAppResult(success: Boolean) = Unit
+            override fun onUnInstallAppResult(success: Boolean) = Unit
+            override fun onOpenAppResult(success: Boolean) = Unit
+            override fun onStopAppResult(success: Boolean) = Unit
+            override fun onGlassAppResume(resumed: Boolean) = Unit
+
+            override fun onQueryAppResult(installed: Boolean) {
+                activity.runOnUiThread {
+                    timeoutJob?.cancel()
+                    timeoutJob = null
+                    onQueryResult?.invoke(packageName, installed)
+                    queryNext(token.orEmpty())
+                }
+            }
+        })
+    }
+
+    private fun finishQueries() {
+        val complete = onQueryComplete
+        cleanup()
+        queryQueue.clear()
+        onQueryResult = null
+        onQueryComplete = null
+        onBusyChanged(false)
+        complete?.invoke()
     }
 
     private fun bindGlobalHiRokidService(link: CXRLink, authToken: String): Boolean {

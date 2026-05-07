@@ -23,4 +23,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "RokidBrew"
 include(":phone-app")
-include(":glasses-app")

@@ -30,6 +30,8 @@ data class BrewApp(
     val version: String,
     val summary: String,
     val description: String,
+    val author: String,
+    val sourceUrl: String?,
     val iconAsset: String?,
     val iconUrl: String?,
     val screenshotAssets: List<String>,
@@ -59,14 +61,15 @@ data class BrewIndexRefresh(
 )
 
 object BrewIndex {
-    private const val CACHE_FILE = "apps.v1.json"
+    private const val CACHE_FILE = "apps.v2.json"
     private val remoteUrls = listOf(
         "https://raw.githubusercontent.com/Anezium/RokidBrew-Registry/main/dist/apps.v1.json",
-        "https://anezium.github.io/RokidBrew-Registry/apps.v1.json",
     )
 
     fun loadInitial(context: Context): List<BrewApp> {
-        return loadCached(context).ifEmpty { loadBundled(context) }
+        val bundled = loadBundled(context)
+        val cached = loadCached(context)
+        return mergeBundledMedia(cached, bundled).ifEmpty { bundled }
     }
 
     fun loadBundled(context: Context): List<BrewApp> {
@@ -85,7 +88,7 @@ object BrewIndex {
         for (url in remoteUrls) {
             runCatching {
                 val raw = fetch(url)
-                val apps = parse(raw)
+                val apps = mergeBundledMedia(parse(raw), loadBundled(context))
                 require(apps.isNotEmpty()) { "Remote registry is empty" }
                 File(context.filesDir, CACHE_FILE).writeText(raw)
                 return@withContext BrewIndexRefresh(apps = apps, sourceUrl = url)
@@ -106,6 +109,22 @@ object BrewIndex {
         }
         return connection.inputStream.bufferedReader().use { it.readText() }.also {
             connection.disconnect()
+        }
+    }
+
+    private fun mergeBundledMedia(apps: List<BrewApp>, bundled: List<BrewApp>): List<BrewApp> {
+        if (apps.isEmpty()) return emptyList()
+        val bundledById = bundled.associateBy { it.id }
+        return apps.map { app ->
+            val bundledApp = bundledById[app.id] ?: return@map app
+            app.copy(
+                author = app.author.takeUnless { it == "Unknown" } ?: bundledApp.author,
+                sourceUrl = app.sourceUrl ?: bundledApp.sourceUrl,
+                iconAsset = app.iconAsset ?: bundledApp.iconAsset,
+                iconUrl = app.iconUrl ?: bundledApp.iconUrl,
+                screenshotAssets = app.screenshotAssets.ifEmpty { bundledApp.screenshotAssets },
+                screenshotUrls = app.screenshotUrls.ifEmpty { bundledApp.screenshotUrls },
+            )
         }
     }
 
@@ -131,6 +150,7 @@ object BrewIndex {
                         )
                     }
                 }
+                val sourceUrl = app.optString("sourceUrl").takeIf { it.isNotBlank() } ?: artifacts.inferredSourceUrl()
                 add(
                     BrewApp(
                         id = app.getString("id"),
@@ -140,6 +160,8 @@ object BrewIndex {
                         version = app.getString("version"),
                         summary = app.getString("summary"),
                         description = app.optString("description", app.getString("summary")),
+                        author = app.optString("author").takeIf { it.isNotBlank() } ?: sourceUrl.inferredAuthor(),
+                        sourceUrl = sourceUrl,
                         iconAsset = app.optString("iconAsset").takeIf { it.isNotBlank() },
                         iconUrl = app.optString("iconUrl").takeIf { it.isNotBlank() },
                         screenshotAssets = app.screenshotAssets(),
@@ -150,6 +172,24 @@ object BrewIndex {
                 )
             }
         }
+    }
+
+    private fun List<BrewArtifact>.inferredSourceUrl(): String? {
+        val url = firstOrNull()?.url ?: return null
+        val rawGithub = Regex("""https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)/[^/]+""").find(url)
+        if (rawGithub != null) {
+            val branch = rawGithub.groupValues[3].takeUnless { it.equals("HEAD", ignoreCase = true) } ?: "main"
+            return "https://github.com/${rawGithub.groupValues[1]}/${rawGithub.groupValues[2]}/tree/$branch/${rawGithub.groupValues[4]}"
+        }
+
+        val github = Regex("""https://github\.com/([^/]+)/([^/]+)""").find(url) ?: return url
+        return "https://github.com/${github.groupValues[1]}/${github.groupValues[2]}"
+    }
+
+    private fun String?.inferredAuthor(): String {
+        if (this.isNullOrBlank()) return "Unknown"
+        val owner = Regex("""https://github\.com/([^/]+)""").find(this)?.groupValues?.getOrNull(1)
+        return owner ?: URL(this).host.removePrefix("www.")
     }
 
     private fun JSONObject.screenshotAssets(): List<String> {

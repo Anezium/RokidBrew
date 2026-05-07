@@ -1,0 +1,28 @@
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#143818" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <layer-list>
+            <!-- Green left indicator bar -->
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="#39FF14" />
+                </shape>
+            </item>
+            <!-- Background overlaid with left inset to reveal green bar -->
+            <item android:left="3dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="#0A2A0E" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</selector>

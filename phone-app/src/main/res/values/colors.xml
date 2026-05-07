@@ -1,0 +1,23 @@
+<resources>
+    <!-- Backgrounds -->
+    <color name="brew_bg">#060B06</color>
+    <color name="brew_panel">#0D1A10</color>
+    <color name="brew_panel_alt">#112914</color>
+    <color name="brew_panel_hi">#173621</color>
+
+    <!-- Text -->
+    <color name="brew_text_bright">#F1F8F2</color>
+    <color name="brew_text">#D4E8D5</color>
+    <color name="brew_muted">#7DA882</color>
+    <color name="brew_dim">#3E6641</color>
+
+    <!-- Accents -->
+    <color name="brew_green">#39FF14</color>
+    <color name="brew_green_soft">#00E676</color>
+    <color name="brew_green_dim">#1F8C26</color>
+    <color name="brew_border">#1B3D1F</color>
+    <color name="brew_border_hi">#2D6638</color>
+    <color name="brew_blue">#69F0AE</color>
+    <color name="brew_warn">#FFD54F</color>
+    <color name="brew_amber">#FFB347</color>
+</resources>

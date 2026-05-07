@@ -1,0 +1,9 @@
+<resources>
+    <color name="ar_black">#000000</color>
+    <color name="ar_text">#EAF6EF</color>
+    <color name="ar_muted">#8EA59A</color>
+    <color name="ar_dim">#4E6258</color>
+    <color name="ar_green">#71FFAC</color>
+    <color name="ar_blue">#7CB7FF</color>
+    <color name="ar_warn">#FFD37D</color>
+</resources>

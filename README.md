@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="RokidBrew-logo.png" width="200" alt="RokidBrew logo" />
+</p>
+
 # RokidBrew
 
 Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, install, and update community-made apps — directly from your phone.

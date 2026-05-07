@@ -19,13 +19,16 @@ Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, insta
 
 Get the latest APK from [GitHub Releases](https://github.com/Anezium/RokidBrew/releases/latest).
 
+Current release: [RokidBrew v0.1.5](https://github.com/Anezium/RokidBrew/releases/tag/v0.1.5).
+
 ## What it does
 
 - **Browse 31+ community apps** for Rokid glasses — AI assistants, navigation HUDs, games, launchers, translators, and more.
 - **Install phone APKs** locally on your Android device.
 - **Push glasses APKs** to your Rokid glasses via CXR-L / Hi Rokid authorization.
 - **Combo apps** — apps that need both a phone and glasses APK get a single install flow.
-- **Check install status** and detect available updates.
+- **Track phone install status** and detect available phone updates.
+- **Track glasses installs after RokidBrew installs them** without auto-scanning every glasses package.
 - **Self-updating** — the store checks for new versions on every refresh.
 
 No desktop. No cloud relay. Everything stays between your phone and your glasses.
@@ -49,6 +52,23 @@ The app loads a cached manifest on startup, then refreshes from the hosted regis
 - **Global Hi Rokid app** installed on your phone (for glasses-side APK installs)
 - Bluetooth pairing between phone and glasses
 - Phone Wi-Fi enabled during glasses installs
+
+## Known CXR-L limitations
+
+RokidBrew uses the public CXR-L / Hi Rokid bridge exposed by the Global Hi Rokid app. In the current `client-l` SDK, the glasses app-status API only exposes package-by-package checks:
+
+```kotlin
+queryGlassAppInstalled(packageName, callback)
+```
+
+There is no public "list all installed glasses apps" API in this SDK. Because of that, RokidBrew does not auto-scan every package in the registry after authorization. Doing so requires repeatedly binding/querying through Hi Rokid, and on Global Hi Rokid `G1.6.14.0428` this triggered a crash loop in `CXRLinkService.onDestroy()` after the authorization token was received.
+
+Current behavior:
+
+- Authorization only stores the Hi Rokid token.
+- Glasses APKs can still be pushed and installed through CXR-L.
+- RokidBrew marks glasses apps as installed after a successful RokidBrew install.
+- Full glasses-side installed-app discovery would require a small companion/helper running on the glasses that can call Android `PackageManager` locally and send the package list back to the phone.
 
 ## Build
 

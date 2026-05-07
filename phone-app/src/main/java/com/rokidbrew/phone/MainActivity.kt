@@ -20,6 +20,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -124,6 +128,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -254,6 +259,7 @@ class MainActivity : AppCompatActivity() {
         if (refreshing) return
         lifecycleScope.launch {
             refreshing = true
+            val started = System.currentTimeMillis()
             if (manual) log("Refreshing store registry...")
             runCatching {
                 BrewIndex.refresh(this@MainActivity)
@@ -271,9 +277,10 @@ class MainActivity : AppCompatActivity() {
                 log("Store registry updated (${refresh.apps.size} apps).")
             }.onFailure { error ->
                 log("Remote registry unavailable: ${error.message ?: error.javaClass.simpleName}")
-            }.also {
-                refreshing = false
             }
+            val elapsed = System.currentTimeMillis() - started
+            if (elapsed < 800) delay(800 - elapsed)
+            refreshing = false
         }
     }
 
@@ -603,7 +610,20 @@ private fun Header(
                     .padding(horizontal = 18.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.Refresh, null, tint = BrewTextBright, modifier = Modifier.size(18.dp))
+                val rotation by animateFloatAsState(
+                    targetValue = if (refreshing) 360f else 0f,
+                    animationSpec = if (refreshing) infiniteRepeatable(
+                        animation = tween(800, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ) else tween(300),
+                    label = "refresh-spin",
+                )
+                Icon(
+                    Icons.Outlined.Refresh,
+                    null,
+                    tint = BrewTextBright,
+                    modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation },
+                )
                 Spacer(Modifier.width(9.dp))
                 Text(if (refreshing) "Sync" else "Refresh", color = BrewGreen, fontSize = 15.sp, fontWeight = FontWeight.Medium)
             }

@@ -31,7 +31,6 @@ Current release: [RokidBrew v0.1.5](https://github.com/Anezium/RokidBrew/release
 - **Track glasses installs after RokidBrew installs them** without auto-scanning every glasses package.
 - **Self-updating** — the store checks for new versions on every refresh.
 
-No desktop. No cloud relay. Everything stays between your phone and your glasses.
 
 ## How it works
 

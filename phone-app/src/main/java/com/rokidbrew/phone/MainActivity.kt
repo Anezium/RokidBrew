@@ -80,6 +80,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -148,6 +149,10 @@ class MainActivity : AppCompatActivity() {
     private val glassesInstallStates = mutableStateMapOf<String, InstallState>()
     private var pendingAction: (() -> Unit)? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private var updateAvailable by mutableStateOf(false)
+    private var updateVersion by mutableStateOf("")
+    private var updateApkUrl by mutableStateOf("")
+    private var updateDownloading by mutableStateOf(false)
 
     private val permissions: Array<String>
         get() = buildList {
@@ -210,6 +215,13 @@ class MainActivity : AppCompatActivity() {
                         }
                     },
                 )
+                if (updateAvailable) {
+                    UpdateDialog(
+                        version = updateVersion,
+                        onUpdate = { performSelfUpdate() },
+                        onDismiss = { updateAvailable = false },
+                    )
+                }
             }
         }
         warmAssets(apps)
@@ -250,11 +262,36 @@ class MainActivity : AppCompatActivity() {
                 warmAssets(refresh.apps)
                 installCheckTick += 1
                 if (cxrL.hasAuthorization()) refreshGlassesInstallStates(refresh.apps)
+                val remoteCode = refresh.brewVersionCode ?: 0L
+                if (remoteCode > BuildConfig.VERSION_CODE && !refresh.brewApkUrl.isNullOrBlank()) {
+                    updateAvailable = true
+                    updateVersion = refresh.brewVersion.orEmpty()
+                    updateApkUrl = refresh.brewApkUrl
+                }
                 log("Store registry updated (${refresh.apps.size} apps).")
             }.onFailure { error ->
                 log("Remote registry unavailable: ${error.message ?: error.javaClass.simpleName}")
             }.also {
                 refreshing = false
+            }
+        }
+    }
+
+    private fun performSelfUpdate() {
+        if (updateDownloading) return
+        updateDownloading = true
+        val url = updateApkUrl
+        val version = updateVersion.ifBlank { "latest" }
+        lifecycleScope.launch {
+            runCatching {
+                log("Downloading RokidBrew $version...")
+                val file = downloader.download(url, "RokidBrew-update.apk") { percent ->
+                    downloadProgress["brew-self-update"] = percent
+                }
+                log("Installing update...")
+                PhonePackageInstallHelper.requestInstall(this@MainActivity, file, ::log)
+            }.onFailure { error ->
+                log("Update failed: ${error.message ?: error.javaClass.simpleName}")
             }
         }
     }
@@ -864,6 +901,51 @@ private fun categoryRowWeight(label: String): Float = when (label.lowercase()) {
     "games", "media", "more" -> 1.08f
     "all", "ai" -> 0.92f
     else -> 1.18f
+}
+
+@Composable
+private fun UpdateDialog(version: String, onUpdate: () -> Unit, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = true),
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = BrewPanelAlt),
+            border = BorderStroke(1.dp, BrewBorderHi),
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text(
+                    "Update available",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = BrewGreen,
+                    fontFamily = BrewFont,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "RokidBrew $version is ready to install.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = BrewText,
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Later", color = BrewDim)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = onUpdate,
+                        colors = ButtonDefaults.buttonColors(containerColor = BrewGreen),
+                    ) {
+                        Text("Update", color = BrewBg)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

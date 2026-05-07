@@ -58,6 +58,17 @@ data class BrewApp(
 data class BrewIndexRefresh(
     val apps: List<BrewApp>,
     val sourceUrl: String,
+    val brewVersion: String?,
+    val brewVersionCode: Long?,
+    val brewApkUrl: String?,
+)
+
+private data class BrewIndexRaw(
+    val json: JSONObject,
+    val apps: List<BrewApp>,
+    val brewVersion: String?,
+    val brewVersionCode: Long?,
+    val brewApkUrl: String?,
 )
 
 object BrewIndex {
@@ -74,13 +85,13 @@ object BrewIndex {
 
     fun loadBundled(context: Context): List<BrewApp> {
         val raw = context.assets.open("apps.json").bufferedReader().use { it.readText() }
-        return parse(raw)
+        return parse(raw).apps
     }
 
     fun loadCached(context: Context): List<BrewApp> {
         val file = File(context.filesDir, CACHE_FILE)
         if (!file.exists()) return emptyList()
-        return runCatching { parse(file.readText()) }.getOrDefault(emptyList())
+        return runCatching { parse(file.readText()).apps }.getOrDefault(emptyList())
     }
 
     suspend fun refresh(context: Context): BrewIndexRefresh = withContext(Dispatchers.IO) {
@@ -88,10 +99,17 @@ object BrewIndex {
         for (url in remoteUrls) {
             runCatching {
                 val raw = fetch(url)
-                val apps = mergeBundledMedia(parse(raw), loadBundled(context))
+                val parsed = parse(raw)
+                val apps = mergeBundledMedia(parsed.apps, loadBundled(context))
                 require(apps.isNotEmpty()) { "Remote registry is empty" }
                 File(context.filesDir, CACHE_FILE).writeText(raw)
-                return@withContext BrewIndexRefresh(apps = apps, sourceUrl = url)
+                return@withContext BrewIndexRefresh(
+                    apps = apps,
+                    sourceUrl = url,
+                    brewVersion = parsed.brewVersion,
+                    brewVersionCode = parsed.brewVersionCode,
+                    brewApkUrl = parsed.brewApkUrl,
+                )
             }.onFailure { error ->
                 lastError = error
             }
@@ -128,12 +146,12 @@ object BrewIndex {
         }
     }
 
-    private fun parse(raw: String): List<BrewApp> {
+    private fun parse(raw: String): BrewIndexRaw {
         val root = JSONObject(raw)
-        val apps = root.getJSONArray("apps")
-        return buildList {
-            for (i in 0 until apps.length()) {
-                val app = apps.getJSONObject(i)
+        val appsArray = root.getJSONArray("apps")
+        val apps = buildList {
+            for (i in 0 until appsArray.length()) {
+                val app = appsArray.getJSONObject(i)
                 val artifactsJson = app.getJSONArray("artifacts")
                 val artifacts = buildList {
                     for (j in 0 until artifactsJson.length()) {
@@ -172,6 +190,13 @@ object BrewIndex {
                 )
             }
         }
+        return BrewIndexRaw(
+            json = root,
+            apps = apps,
+            brewVersion = root.optString("brewVersion").takeIf { it.isNotBlank() },
+            brewVersionCode = root.optLong("brewVersionCode").takeIf { it > 0L },
+            brewApkUrl = root.optString("brewApkUrl").takeIf { it.isNotBlank() },
+        )
     }
 
     private fun List<BrewArtifact>.inferredSourceUrl(): String? {

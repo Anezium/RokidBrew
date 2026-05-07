@@ -81,6 +81,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -223,6 +224,8 @@ class MainActivity : AppCompatActivity() {
                 if (updateAvailable) {
                     UpdateDialog(
                         version = updateVersion,
+                        downloading = updateDownloading,
+                        downloadPercent = downloadProgress["brew-self-update"] ?: 0,
                         onUpdate = { performSelfUpdate() },
                         onDismiss = { updateAvailable = false },
                     )
@@ -295,10 +298,14 @@ class MainActivity : AppCompatActivity() {
                 val file = downloader.download(url, "RokidBrew-update.apk") { percent ->
                     downloadProgress["brew-self-update"] = percent
                 }
-                log("Installing update...")
-                PhonePackageInstallHelper.requestInstall(this@MainActivity, file, ::log)
+                log("Downloaded ${file.length()} bytes.")
+                val ok = PhonePackageInstallHelper.requestInstall(this@MainActivity, file, ::log)
+                if (!ok) {
+                    updateDownloading = false
+                }
             }.onFailure { error ->
                 log("Update failed: ${error.message ?: error.javaClass.simpleName}")
+                updateDownloading = false
             }
         }
     }
@@ -924,7 +931,7 @@ private fun categoryRowWeight(label: String): Float = when (label.lowercase()) {
 }
 
 @Composable
-private fun UpdateDialog(version: String, onUpdate: () -> Unit, onDismiss: () -> Unit) {
+private fun UpdateDialog(version: String, downloading: Boolean, downloadPercent: Int, onUpdate: () -> Unit, onDismiss: () -> Unit) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = true),
@@ -936,28 +943,38 @@ private fun UpdateDialog(version: String, onUpdate: () -> Unit, onDismiss: () ->
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
                 Text(
-                    "Update available",
+                    if (downloading) "Downloading..." else "Update available",
                     style = MaterialTheme.typography.titleLarge,
                     color = BrewGreen,
                     fontFamily = BrewFont,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "RokidBrew $version is ready to install.",
+                    if (downloading) "RokidBrew $version ($downloadPercent%)" else "RokidBrew $version is ready to install.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = BrewText,
                 )
+                if (downloading) {
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { downloadPercent / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = BrewGreen,
+                        trackColor = BrewPanel,
+                    )
+                }
                 Spacer(Modifier.height(20.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(onClick = onDismiss, enabled = !downloading) {
                         Text("Later", color = BrewDim)
                     }
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = onUpdate,
+                        enabled = !downloading,
                         colors = ButtonDefaults.buttonColors(containerColor = BrewGreen),
                     ) {
                         Text("Update", color = BrewBg)

@@ -4,6 +4,11 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+fun String.asBuildConfigString(): String = replace("\\", "\\\\").replace("\"", "\\\"")
+
+val defaultRegistryUrl = "https://raw.githubusercontent.com/Anezium/RokidBrew-Registry/main/dist/apps.v1.json"
+val registryUrl = providers.gradleProperty("rokidbrewRegistryUrl").orElse(defaultRegistryUrl).get()
+
 android {
     namespace = "com.rokidbrew.phone"
     compileSdk {
@@ -14,13 +19,20 @@ android {
         applicationId = "com.rokidbrew.phone"
         minSdk = 28
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
+        buildConfigField("String", "ROKIDBREW_REGISTRY_URL", "\"${registryUrl.asBuildConfigString()}\"")
+        manifestPlaceholders["cleartextTrafficPermitted"] = "false"
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders["cleartextTrafficPermitted"] = "true"
+        }
+
         release {
             isMinifyEnabled = false
+            manifestPlaceholders["cleartextTrafficPermitted"] = "false"
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

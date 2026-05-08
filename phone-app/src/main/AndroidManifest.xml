@@ -25,6 +25,7 @@
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@drawable/ic_launcher_simple"
+        android:usesCleartextTraffic="${cleartextTrafficPermitted}"
         android:supportsRtl="true"
         android:theme="@style/Theme.RokidBrewPhone">
         <activity

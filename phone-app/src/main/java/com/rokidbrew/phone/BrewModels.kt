@@ -7,6 +7,9 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 data class BrewArtifact(
     val target: String,
@@ -36,6 +39,11 @@ data class BrewApp(
     val iconUrl: String?,
     val screenshotAssets: List<String>,
     val screenshotUrls: List<String>,
+    val featured: Boolean,
+    val featuredRank: Int?,
+    val publishedAt: String?,
+    val newUntil: String?,
+    val isNew: Boolean,
     val phoneRequired: Boolean,
     val artifacts: List<BrewArtifact>,
 ) {
@@ -49,6 +57,7 @@ data class BrewApp(
     fun artifactFor(target: String): BrewArtifact? = artifacts.firstOrNull { it.target == target }
     fun hasTarget(target: String): Boolean = artifactFor(target) != null
     fun isPhoneSection(): Boolean = type == "combo" || type == "phone" || hasTarget("phone") || phoneRequired
+    fun isFeatured(): Boolean = featured || featuredRank != null
     fun screenshotAt(index: Int): BrewScreenshot = BrewScreenshot(
         assetName = screenshotAssets.getOrNull(index),
         url = screenshotUrls.getOrNull(index),
@@ -74,7 +83,7 @@ private data class BrewIndexRaw(
 object BrewIndex {
     private const val CACHE_FILE = "apps.v2.json"
     private val remoteUrls = listOf(
-        "https://raw.githubusercontent.com/Anezium/RokidBrew-Registry/main/dist/apps.v1.json",
+        BuildConfig.ROKIDBREW_REGISTRY_URL,
     )
 
     fun loadInitial(context: Context): List<BrewApp> {
@@ -169,6 +178,8 @@ object BrewIndex {
                     }
                 }
                 val sourceUrl = app.optString("sourceUrl").takeIf { it.isNotBlank() } ?: artifacts.inferredSourceUrl()
+                val publishedAt = app.optString("publishedAt").takeIf { it.isNotBlank() }
+                val newUntil = app.optString("newUntil").takeIf { it.isNotBlank() }
                 add(
                     BrewApp(
                         id = app.getString("id"),
@@ -184,6 +195,11 @@ object BrewIndex {
                         iconUrl = app.optString("iconUrl").takeIf { it.isNotBlank() },
                         screenshotAssets = app.screenshotAssets(),
                         screenshotUrls = app.screenshotUrls(),
+                        featured = app.optBoolean("featured", false),
+                        featuredRank = app.optionalInt("featuredRank"),
+                        publishedAt = publishedAt,
+                        newUntil = newUntil,
+                        isNew = isNewApp(publishedAt, newUntil),
                         phoneRequired = app.optBoolean("phoneRequired", false),
                         artifacts = artifacts,
                     ),
@@ -236,5 +252,37 @@ object BrewIndex {
                 urls.optString(i).takeIf { it.isNotBlank() }?.let(::add)
             }
         }
+    }
+
+    private fun JSONObject.optionalInt(name: String): Int? {
+        if (!has(name) || isNull(name)) return null
+        return optInt(name).takeIf { it >= 0 }
+    }
+
+    private fun isNewApp(publishedAt: String?, newUntil: String?): Boolean {
+        val now = System.currentTimeMillis()
+        parseRegistryTime(newUntil)?.let { return now <= it }
+        val published = parseRegistryTime(publishedAt) ?: return false
+        val newWindowMillis = 2L * 24L * 60L * 60L * 1000L
+        return now >= published && now - published <= newWindowMillis
+    }
+
+    private fun parseRegistryTime(value: String?): Long? {
+        val raw = value?.takeIf { it.isNotBlank() } ?: return null
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+            "yyyy-MM-dd'T'HH:mm:ssX",
+            "yyyy-MM-dd",
+        )
+        for (pattern in patterns) {
+            val parsed = runCatching {
+                SimpleDateFormat(pattern, Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                    isLenient = false
+                }.parse(raw)?.time
+            }.getOrNull()
+            if (parsed != null) return parsed
+        }
+        return null
     }
 }

@@ -95,6 +95,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -135,6 +136,8 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private const val NEW_CATEGORY = "New"
 
 class MainActivity : AppCompatActivity() {
     private enum class Section { PHONE, GLASSES }
@@ -469,7 +472,9 @@ private fun BrewPhoneApp(
     }
     val visibleApps = remember(sectionApps, categoryFilter, query) {
         sectionApps.filter { app ->
-            val categoryOk = categoryFilter == null || app.category.equals(categoryFilter, ignoreCase = true)
+            val categoryOk = categoryFilter == null ||
+                (categoryFilter == NEW_CATEGORY && app.isNew) ||
+                app.category.equals(categoryFilter, ignoreCase = true)
             val searchOk = query.isBlank() ||
                 app.name.contains(query, ignoreCase = true) ||
                 app.author.contains(query, ignoreCase = true) ||
@@ -479,8 +484,18 @@ private fun BrewPhoneApp(
             categoryOk && searchOk
         }
     }
-    val categories = remember(sectionApps) { sectionApps.map { it.category }.distinct().sorted() }
-    val hero = visibleApps.firstOrNull() ?: sectionApps.firstOrNull()
+    val categories = remember(sectionApps) {
+        buildList {
+            if (sectionApps.any { it.isNew }) add(NEW_CATEGORY)
+            addAll(sectionApps.map { it.category }.distinct().sorted())
+        }
+    }
+    val heroApps = remember(visibleApps, sectionApps) {
+        visibleApps.curatedHeroApps()
+            .ifEmpty { visibleApps.take(1) }
+            .ifEmpty { sectionApps.curatedHeroApps() }
+            .ifEmpty { sectionApps.take(1) }
+    }
 
     Box(
         modifier = Modifier
@@ -527,13 +542,15 @@ private fun BrewPhoneApp(
                     uiScope.launch { scrollState.scrollTo(0) }
                 },
             )
-            hero?.let {
-                HeroCard(
-                    app = it,
-                    mediaLoader = mediaLoader,
-                    iconLoader = iconLoader,
-                    onClick = { selectedApp = it },
-                )
+            if (heroApps.isNotEmpty()) {
+                key(activeSection, heroApps.joinToString("|") { it.id }) {
+                    HeroCarousel(
+                        apps = heroApps,
+                        mediaLoader = mediaLoader,
+                        iconLoader = iconLoader,
+                        onClick = { selectedApp = it },
+                    )
+                }
             }
             CategoryStrip(
                 categories = categories,
@@ -752,6 +769,55 @@ private fun SectionTab(label: String, selected: Boolean, modifier: Modifier, lea
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun HeroCarousel(
+    apps: List<BrewApp>,
+    mediaLoader: MediaLoader,
+    iconLoader: IconLoader,
+    onClick: (BrewApp) -> Unit,
+) {
+    val pagerState = rememberPagerState(pageCount = { apps.size })
+    LaunchedEffect(apps.map { it.id }) {
+        pagerState.scrollToPage(0)
+    }
+    Column(Modifier.fillMaxWidth()) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(204.dp),
+        ) { page ->
+            val app = apps[page]
+            HeroCard(
+                app = app,
+                mediaLoader = mediaLoader,
+                iconLoader = iconLoader,
+                onClick = { onClick(app) },
+            )
+        }
+        if (apps.size > 1) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(apps.size) { index ->
+                    Box(
+                        modifier = Modifier
+                            .width(if (index == pagerState.currentPage) 18.dp else 7.dp)
+                            .height(7.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (index == pagerState.currentPage) BrewGreen else BrewBorderHi),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HeroCard(app: BrewApp, mediaLoader: MediaLoader, iconLoader: IconLoader, onClick: () -> Unit) {
     val painter = rememberAppPainter(app = app, iconLoader = iconLoader, mediaLoader = mediaLoader, preferScreenshot = false)
     Card(
@@ -781,6 +847,10 @@ private fun HeroCard(app: BrewApp, mediaLoader: MediaLoader, iconLoader: IconLoa
                 Icon(Icons.Outlined.Star, null, tint = BrewGreen, modifier = Modifier.size(15.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("FEATURED", color = BrewGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                if (app.isNew) {
+                    Spacer(Modifier.width(8.dp))
+                    Badge("NEW", color = BrewAmber)
+                }
             }
             Text(
                 text = "v${app.version}",
@@ -913,18 +983,26 @@ private fun CategoryStrip(categories: List<String>, selected: String?, onSelect:
 }
 
 private fun prioritizedCategories(categories: List<String>): List<String> {
-    val priority = listOf("AI", "Navigation", "Media", "Games", "Utilities", "Productivity", "Browser", "Mobility")
+    val priority = listOf(NEW_CATEGORY, "AI", "Navigation", "Media", "Games", "Utilities", "Productivity", "Browser", "Mobility")
     return (priority.filter { wanted -> categories.any { it.equals(wanted, ignoreCase = true) } }
         .map { wanted -> categories.first { it.equals(wanted, ignoreCase = true) } } +
         categories.filterNot { category -> priority.any { it.equals(category, ignoreCase = true) } })
         .distinct()
 }
 
+private fun List<BrewApp>.curatedHeroApps(): List<BrewApp> {
+    val newApps = filter { it.isNew }
+        .sortedWith(compareByDescending<BrewApp> { it.publishedAt.orEmpty() }.thenBy { it.name.lowercase(Locale.US) })
+    val featuredApps = filter { !it.isNew && it.isFeatured() }
+        .sortedWith(compareBy<BrewApp> { it.featuredRank ?: Int.MAX_VALUE }.thenBy { it.name.lowercase(Locale.US) })
+    return (newApps + featuredApps).distinctBy { it.id }
+}
+
 private fun categoryRowWeight(label: String): Float = when (label.lowercase()) {
     "navigation", "accessibility", "productivity" -> 1.65f
     "utilities", "mobility", "browser" -> 1.35f
     "games", "media", "more" -> 1.08f
-    "all", "ai" -> 0.92f
+    "all", "ai", "new" -> 0.92f
     else -> 1.18f
 }
 
@@ -1113,6 +1191,7 @@ private fun CategoryIcon(label: String, color: Color, size: androidx.compose.ui.
     val icon = when (label.lowercase()) {
         "more" -> Icons.Outlined.Apps
         "all" -> Icons.Outlined.Apps
+        "new" -> Icons.Outlined.Star
         "ai" -> Icons.Outlined.Psychology
         "accessibility" -> Icons.Outlined.AccessibilityNew
         "browser" -> Icons.Outlined.Public
@@ -1239,13 +1318,14 @@ private fun AppCard(
 @Composable
 private fun AppTargetTags(app: BrewApp, modifier: Modifier = Modifier) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (app.hasTarget("phone")) MiniTargetTag("PHONE", "phone", width = 74.dp)
-        if (app.hasTarget("glasses")) MiniTargetTag("GLASSES", "glasses", width = 90.dp)
+        if (app.isNew) MiniTargetTag("NEW", null, width = 52.dp, color = BrewAmber)
+        if (app.hasTarget("phone")) MiniTargetTag("PHONE", "phone", width = 70.dp)
+        if (app.hasTarget("glasses")) MiniTargetTag("GLASS", "glasses", width = 76.dp)
     }
 }
 
 @Composable
-private fun MiniTargetTag(label: String, icon: String, width: androidx.compose.ui.unit.Dp) {
+private fun MiniTargetTag(label: String, icon: String?, width: androidx.compose.ui.unit.Dp, color: Color = BrewGreen) {
     val fontScale = LocalDensity.current.fontScale
     fun fixedSp(value: Float) = (value / fontScale.coerceAtLeast(1f)).sp
     Row(
@@ -1253,18 +1333,18 @@ private fun MiniTargetTag(label: String, icon: String, width: androidx.compose.u
             .width(width)
             .height(24.dp)
             .clip(RoundedCornerShape(7.dp))
-            .background(BrewGreen.copy(alpha = 0.08f))
-            .border(1.dp, BrewGreenDim, RoundedCornerShape(7.dp))
+            .background(color.copy(alpha = 0.08f))
+            .border(1.dp, color.copy(alpha = 0.72f), RoundedCornerShape(7.dp))
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
-        if (icon == "phone") Icon(Icons.Outlined.PhoneAndroid, null, tint = BrewGreen, modifier = Modifier.size(11.dp))
+        if (icon == "phone") Icon(Icons.Outlined.PhoneAndroid, null, tint = color, modifier = Modifier.size(11.dp))
         if (icon == "glasses") Text("∞", color = BrewGreen, fontSize = fixedSp(14f), fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(3.dp))
+        if (icon != null) Spacer(Modifier.width(3.dp))
         Text(
             label,
-            color = BrewGreen,
+            color = color,
             fontSize = fixedSp(8f),
             fontWeight = FontWeight.Medium,
             maxLines = 1,
@@ -1704,6 +1784,7 @@ private fun SectionHeader(title: String, action: String? = null, onAction: (() -
 @Composable
 private fun TargetTags(app: BrewApp, modifier: Modifier = Modifier) {
     Row(modifier = modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (app.isNew) TargetTag("NEW", color = BrewAmber)
         if (app.hasTarget("phone")) TargetTag("PHONE", "phone")
         if (app.hasTarget("glasses")) TargetTag("GLASSES", "glasses")
         if (app.phoneRequired && !app.hasTarget("phone")) TargetTag("PHONE REQ")
@@ -1711,8 +1792,9 @@ private fun TargetTags(app: BrewApp, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TargetTag(label: String, icon: String? = null) {
+private fun TargetTag(label: String, icon: String? = null, color: Color = BrewGreen) {
     val tagWidth = when (label) {
+        "NEW" -> 68.dp
         "PHONE" -> 92.dp
         "GLASSES" -> 104.dp
         "PHONE REQ" -> 112.dp
@@ -1723,18 +1805,18 @@ private fun TargetTag(label: String, icon: String? = null) {
             .width(tagWidth)
             .height(32.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(BrewGreen.copy(alpha = 0.10f))
-            .border(1.dp, BrewGreenDim, RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.10f))
+            .border(1.dp, color.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
             .padding(horizontal = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
-        if (icon == "phone") Icon(Icons.Outlined.PhoneAndroid, null, tint = BrewGreen, modifier = Modifier.size(12.dp))
+        if (icon == "phone") Icon(Icons.Outlined.PhoneAndroid, null, tint = color, modifier = Modifier.size(12.dp))
         if (icon == "glasses") Text("∞", color = BrewGreen, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         if (icon != null) Spacer(Modifier.width(4.dp))
         Text(
             label,
-            color = BrewGreen,
+            color = color,
             fontSize = 9.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
@@ -1745,16 +1827,16 @@ private fun TargetTag(label: String, icon: String? = null) {
 }
 
 @Composable
-private fun Badge(label: String, modifier: Modifier = Modifier) {
+private fun Badge(label: String, modifier: Modifier = Modifier, color: Color = BrewGreen) {
     Text(
         label,
-        color = BrewGreen,
+        color = color,
         fontSize = 9.sp,
         fontWeight = FontWeight.Bold,
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(Color.Transparent)
-            .border(1.dp, BrewGreenDim, RoundedCornerShape(6.dp))
+            .border(1.dp, color.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }

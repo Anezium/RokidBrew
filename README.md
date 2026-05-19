@@ -11,6 +11,12 @@ Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, insta
 [![Compose](https://img.shields.io/badge/Jetpack_Compose-Material_3-4285F4?logo=jetpackcompose)](https://developer.android.com/compose)
 
 <p align="center">
+  <a href="https://ko-fi.com/M8R61ZTXMI" target="_blank">
+    <img height="36" style="border:0px;height:36px;" src="https://storage.ko-fi.com/cdn/kofi4.png?v=6" border="0" alt="Buy Me a Coffee at ko-fi.com" />
+  </a>
+</p>
+
+<p align="center">
   <img src="RokidBrew_screenshot1.jpg" width="280" alt="RokidBrew store screen" />
   <img src="RokidBrew_screenshot2.jpg" width="280" alt="RokidBrew app detail" />
 </p>

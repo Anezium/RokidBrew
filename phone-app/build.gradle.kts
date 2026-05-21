@@ -19,8 +19,8 @@ android {
         applicationId = "com.rokidbrew.phone"
         minSdk = 28
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
         buildConfigField("String", "ROKIDBREW_REGISTRY_URL", "\"${registryUrl.asBuildConfigString()}\"")
         manifestPlaceholders["cleartextTrafficPermitted"] = "false"
     }

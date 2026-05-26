@@ -1,6 +1,7 @@
 <resources>
     <!-- Backgrounds -->
     <color name="brew_bg">#060B06</color>
+    <color name="splash_bg">#07110F</color>
     <color name="brew_panel">#0D1A10</color>
     <color name="brew_panel_alt">#112914</color>
     <color name="brew_panel_hi">#173621</color>

@@ -25,6 +25,7 @@ class CxrLHiRokidSession(
     private val activity: AppCompatActivity,
     private val onStatus: (String) -> Unit,
     private val onBusyChanged: (Boolean) -> Unit,
+    private val onConnectionChanged: (CxrConnectionState) -> Unit,
     initialHostApp: RokidHostApp = RokidHostApp.DEFAULT,
 ) {
     companion object {
@@ -61,6 +62,7 @@ class CxrLHiRokidSession(
         cleanup()
         token = null
         hostApp = nextHostApp
+        notifyConnectionChanged()
     }
 
     fun isHostAppInstalled(targetHostApp: RokidHostApp = hostApp): Boolean {
@@ -99,10 +101,20 @@ class CxrLHiRokidSession(
             is AuthResult.AuthSuccess -> {
                 token = result.token
                 onStatus("${hostApp.displayName} authorization token received.")
+                notifyConnectionChanged()
             }
 
-            is AuthResult.AuthCancel -> onStatus("${hostApp.displayName} authorization cancelled.")
-            is AuthResult.AuthFail -> onStatus("${hostApp.displayName} authorization failed.")
+            is AuthResult.AuthCancel -> {
+                token = null
+                onStatus("${hostApp.displayName} authorization cancelled.")
+                notifyConnectionChanged()
+            }
+
+            is AuthResult.AuthFail -> {
+                token = null
+                onStatus("${hostApp.displayName} authorization failed.")
+                notifyConnectionChanged()
+            }
         }
     }
 
@@ -188,6 +200,7 @@ class CxrLHiRokidSession(
         glassBtConnected = false
         uploadStarted = false
         queryStarted = false
+        notifyConnectionChanged()
     }
 
     private fun connectAndUpload(
@@ -204,6 +217,7 @@ class CxrLHiRokidSession(
                     activity.runOnUiThread {
                         cxrlConnected = connected
                         onStatus("CXR-L service connected: $connected")
+                        notifyConnectionChanged()
                         maybeUploadPending()
                     }
                 }
@@ -212,6 +226,7 @@ class CxrLHiRokidSession(
                     activity.runOnUiThread {
                         glassBtConnected = connected
                         onStatus("Glasses Bluetooth connected: $connected")
+                        notifyConnectionChanged()
                         maybeUploadPending()
                     }
                 }
@@ -276,6 +291,7 @@ class CxrLHiRokidSession(
                 override fun onCXRLConnected(connected: Boolean) {
                     activity.runOnUiThread {
                         cxrlConnected = connected
+                        notifyConnectionChanged()
                         maybeQueryPending()
                     }
                 }
@@ -283,6 +299,7 @@ class CxrLHiRokidSession(
                 override fun onGlassBtConnected(connected: Boolean) {
                     activity.runOnUiThread {
                         glassBtConnected = connected
+                        notifyConnectionChanged()
                         maybeQueryPending()
                     }
                 }
@@ -421,4 +438,26 @@ class CxrLHiRokidSession(
         val info = activity.packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_ACTIVITIES)
         return info?.packageName?.takeIf { it.isNotBlank() } ?: error("Cannot read APK package name")
     }
+
+    private fun notifyConnectionChanged() {
+        onConnectionChanged(
+            CxrConnectionState(
+                authorized = hasAuthorization(),
+                cxrlConnected = cxrlConnected,
+                glassBtConnected = glassBtConnected,
+            ),
+        )
+    }
+}
+
+data class CxrConnectionState(
+    val authorized: Boolean = false,
+    val cxrlConnected: Boolean = false,
+    val glassBtConnected: Boolean = false,
+) {
+    val connected: Boolean
+        get() = cxrlConnected && glassBtConnected
+
+    val connecting: Boolean
+        get() = authorized && (cxrlConnected || glassBtConnected) && !connected
 }

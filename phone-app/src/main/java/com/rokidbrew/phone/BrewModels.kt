@@ -25,6 +25,19 @@ data class BrewScreenshot(
     val url: String?,
 )
 
+data class BrewListing(
+    val about: String?,
+    val descriptionMarkdown: String?,
+)
+
+data class BrewRelease(
+    val version: String?,
+    val date: String?,
+    val sourceReleaseUrl: String?,
+    val notes: String?,
+    val changes: List<String>,
+)
+
 data class BrewApp(
     val id: String,
     val name: String,
@@ -46,6 +59,8 @@ data class BrewApp(
     val isNew: Boolean,
     val phoneRequired: Boolean,
     val artifacts: List<BrewArtifact>,
+    val listing: BrewListing?,
+    val releases: List<BrewRelease>,
 ) {
     val screenshotAsset: String?
         get() = screenshotAssets.firstOrNull()
@@ -58,6 +73,9 @@ data class BrewApp(
     fun hasTarget(target: String): Boolean = artifactFor(target) != null
     fun isPhoneSection(): Boolean = type == "combo" || type == "phone" || hasTarget("phone") || phoneRequired
     fun isFeatured(): Boolean = featured || featuredRank != null
+    fun aboutText(): String = listing?.about?.takeIf { it.isNotBlank() }
+        ?: listing?.descriptionMarkdown?.takeIf { it.isNotBlank() }
+        ?: description
     fun screenshotAt(index: Int): BrewScreenshot = BrewScreenshot(
         assetName = screenshotAssets.getOrNull(index),
         url = screenshotUrls.getOrNull(index),
@@ -151,6 +169,8 @@ object BrewIndex {
                 iconUrl = app.iconUrl ?: bundledApp.iconUrl,
                 screenshotAssets = app.screenshotAssets.ifEmpty { bundledApp.screenshotAssets },
                 screenshotUrls = app.screenshotUrls.ifEmpty { bundledApp.screenshotUrls },
+                listing = app.listing ?: bundledApp.listing,
+                releases = app.releases.ifEmpty { bundledApp.releases },
             )
         }
     }
@@ -180,6 +200,7 @@ object BrewIndex {
                 val sourceUrl = app.optString("sourceUrl").takeIf { it.isNotBlank() } ?: artifacts.inferredSourceUrl()
                 val publishedAt = app.optString("publishedAt").takeIf { it.isNotBlank() }
                 val newUntil = app.optString("newUntil").takeIf { it.isNotBlank() }
+                val listing = app.listing()
                 add(
                     BrewApp(
                         id = app.getString("id"),
@@ -202,6 +223,8 @@ object BrewIndex {
                         isNew = isNewApp(publishedAt, newUntil),
                         phoneRequired = app.optBoolean("phoneRequired", false),
                         artifacts = artifacts,
+                        listing = listing,
+                        releases = app.releases(),
                     ),
                 )
             }
@@ -250,6 +273,45 @@ object BrewIndex {
         return buildList {
             for (i in 0 until urls.length()) {
                 urls.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }
+
+    private fun JSONObject.listing(): BrewListing? {
+        val listing = optJSONObject("listing") ?: return null
+        val about = listing.optString("about").takeIf { it.isNotBlank() }
+        val descriptionMarkdown = listing.optString("descriptionMarkdown").takeIf { it.isNotBlank() }
+        if (about == null && descriptionMarkdown == null) return null
+        return BrewListing(
+            about = about,
+            descriptionMarkdown = descriptionMarkdown,
+        )
+    }
+
+    private fun JSONObject.releases(): List<BrewRelease> {
+        val releases = optJSONArray("releases") ?: return emptyList()
+        return buildList {
+            for (i in 0 until releases.length()) {
+                val release = releases.optJSONObject(i) ?: continue
+                add(
+                    BrewRelease(
+                        version = release.optString("version").takeIf { it.isNotBlank() },
+                        date = release.optString("date").takeIf { it.isNotBlank() },
+                        sourceReleaseUrl = release.optString("sourceReleaseUrl").takeIf { it.isNotBlank() },
+                        notes = release.optString("notes").takeIf { it.isNotBlank() }
+                            ?: release.optString("notesMarkdown").takeIf { it.isNotBlank() },
+                        changes = release.stringList("changes"),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun JSONObject.stringList(name: String): List<String> {
+        val values = optJSONArray(name) ?: return emptyList()
+        return buildList {
+            for (i in 0 until values.length()) {
+                values.optString(i).takeIf { it.isNotBlank() }?.let(::add)
             }
         }
     }

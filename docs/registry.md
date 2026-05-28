@@ -37,3 +37,14 @@ The manifest supports:
 - `screenshotUrls`
 
 The app caches remote icons/screenshots locally. If remote media is unavailable, it falls back to bundled assets or generated initials.
+
+## Store listing fields
+
+The redesigned UI can read optional richer fields for long product pages:
+
+- `listing.about`
+- `listing.descriptionMarkdown`
+- `releases[].notes`
+- `releases[].changes`
+
+See [registry-store-listings.md](registry-store-listings.md) for the proposed JSON shape and the README/GitHub Releases import workflow.

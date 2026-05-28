@@ -25,11 +25,11 @@ class CxrLHiRokidSession(
     private val activity: AppCompatActivity,
     private val onStatus: (String) -> Unit,
     private val onBusyChanged: (Boolean) -> Unit,
+    initialHostApp: RokidHostApp = RokidHostApp.DEFAULT,
 ) {
     companion object {
         const val AUTH_REQUEST_CODE = 4027
 
-        private const val GLOBAL_AI_APP_PACKAGE = "com.rokid.sprite.global.aiapp"
         private const val AUTH_ACTIVITY_CLASS = "com.rokid.sprite.aiapp.externalapp.auth.AuthorizationActivity"
         private const val AUTH_ACTION = "com.rokid.sprite.aiapp.externalapp.AUTHORIZATION"
         private const val MEDIA_SERVICE_ACTION = "com.rokid.sprite.aiapp.externalapp.MEDIA_STREAM_SERVICE"
@@ -37,11 +37,14 @@ class CxrLHiRokidSession(
         private const val AUTH_PACKAGE_EXTRA = "auth_package"
     }
 
+    private var hostApp: RokidHostApp = initialHostApp
     private var token: String? = null
     private var cxrLink: CXRLink? = null
     private var pendingUpload: File? = null
     private var pendingInstallResult: ((Boolean) -> Unit)? = null
     private var pendingQueryPackage: String? = null
+    private var activeQueryToken: String? = null
+    private var activeQueryHostApp: RokidHostApp? = null
     private var queryQueue: ArrayDeque<String> = ArrayDeque()
     private var onQueryResult: ((String, Boolean) -> Unit)? = null
     private var onQueryComplete: (() -> Unit)? = null
@@ -53,22 +56,41 @@ class CxrLHiRokidSession(
 
     fun hasAuthorization(): Boolean = !token.isNullOrBlank()
 
+    fun selectHostApp(nextHostApp: RokidHostApp) {
+        if (hostApp == nextHostApp) return
+        cleanup()
+        token = null
+        hostApp = nextHostApp
+    }
+
+    fun isHostAppInstalled(targetHostApp: RokidHostApp = hostApp): Boolean {
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activity.packageManager.getPackageInfo(targetHostApp.packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                activity.packageManager.getPackageInfo(targetHostApp.packageName, 0)
+            }
+        }.isSuccess
+    }
+
     fun requestAuthorization() {
-        if (!isGlobalHiRokidInstalled()) {
-            onStatus("Install global Hi Rokid first.")
+        val targetHostApp = hostApp
+        if (!isHostAppInstalled(targetHostApp)) {
+            onStatus("Install ${targetHostApp.displayName} first.")
             return
         }
 
         runCatching {
-            val intent = Intent().setComponent(ComponentName(GLOBAL_AI_APP_PACKAGE, AUTH_ACTIVITY_CLASS))
+            val intent = Intent().setComponent(ComponentName(targetHostApp.packageName, AUTH_ACTIVITY_CLASS))
             activity.startActivityForResult(intent, AUTH_REQUEST_CODE)
         }.recoverCatching {
-            val fallback = Intent(AUTH_ACTION).setPackage(GLOBAL_AI_APP_PACKAGE)
+            val fallback = Intent(AUTH_ACTION).setPackage(targetHostApp.packageName)
             activity.startActivityForResult(fallback, AUTH_REQUEST_CODE)
         }.onSuccess {
-            onStatus("Authorization opened in Hi Rokid.")
+            onStatus("Authorization opened in ${targetHostApp.displayName}.")
         }.onFailure { error ->
-            onStatus("Failed to open Hi Rokid authorization: ${error.message ?: error.javaClass.simpleName}")
+            onStatus("Failed to open ${targetHostApp.displayName} authorization: ${error.message ?: error.javaClass.simpleName}")
         }
     }
 
@@ -76,28 +98,29 @@ class CxrLHiRokidSession(
         when (val result = AuthorizationHelper.INSTANCE.parseAuthorizationResult(resultCode, data)) {
             is AuthResult.AuthSuccess -> {
                 token = result.token
-                onStatus("Hi Rokid authorization token received.")
+                onStatus("${hostApp.displayName} authorization token received.")
             }
 
-            is AuthResult.AuthCancel -> onStatus("Hi Rokid authorization cancelled.")
-            is AuthResult.AuthFail -> onStatus("Hi Rokid authorization failed.")
+            is AuthResult.AuthCancel -> onStatus("${hostApp.displayName} authorization cancelled.")
+            is AuthResult.AuthFail -> onStatus("${hostApp.displayName} authorization failed.")
         }
     }
 
     fun installApk(apkFile: File, onInstallResult: ((Boolean) -> Unit)? = null) {
-        if (!isGlobalHiRokidInstalled()) {
-            onStatus("Install global Hi Rokid on this phone first.")
+        val targetHostApp = hostApp
+        if (!isHostAppInstalled(targetHostApp)) {
+            onStatus("Install ${targetHostApp.displayName} on this phone first.")
             onInstallResult?.invoke(false)
             return
         }
         if (!isWifiEnabled()) {
-            onStatus("Turn on phone Wi-Fi first. Hi Rokid needs it for the glasses hotspot.")
+            onStatus("Turn on phone Wi-Fi first. ${targetHostApp.displayName} needs it for the glasses hotspot.")
             onInstallResult?.invoke(false)
             return
         }
         val authToken = token
         if (authToken.isNullOrBlank()) {
-            onStatus("Press Authorize Hi Rokid first.")
+            onStatus("Press Authorize ${targetHostApp.shortLabel} first.")
             requestAuthorization()
             onInstallResult?.invoke(false)
             return
@@ -107,7 +130,7 @@ class CxrLHiRokidSession(
         runCatching {
             val packageName = readPackageName(apkFile)
             onStatus("Detected package: $packageName")
-            connectAndUpload(authToken, packageName, apkFile, onInstallResult)
+            connectAndUpload(authToken, targetHostApp, packageName, apkFile, onInstallResult)
         }.onFailure { error ->
             onStatus("CXR-L failed: ${error.message ?: error.javaClass.simpleName}")
             onBusyChanged(false)
@@ -120,23 +143,24 @@ class CxrLHiRokidSession(
         onResult: (String, Boolean) -> Unit,
         onComplete: () -> Unit,
     ) {
+        val targetHostApp = hostApp
         if (packageNames.isEmpty()) {
             onComplete()
             return
         }
-        if (!isGlobalHiRokidInstalled()) {
-            onStatus("Install global Hi Rokid on this phone first.")
+        if (!isHostAppInstalled(targetHostApp)) {
+            onStatus("Install ${targetHostApp.displayName} on this phone first.")
             onComplete()
             return
         }
         if (!isWifiEnabled()) {
-            onStatus("Turn on phone Wi-Fi first. Hi Rokid needs it for the glasses hotspot.")
+            onStatus("Turn on phone Wi-Fi first. ${targetHostApp.displayName} needs it for the glasses hotspot.")
             onComplete()
             return
         }
         val authToken = token
         if (authToken.isNullOrBlank()) {
-            onStatus("Press Authorize Hi Rokid first.")
+            onStatus("Press Authorize ${targetHostApp.shortLabel} first.")
             requestAuthorization()
             onComplete()
             return
@@ -147,7 +171,7 @@ class CxrLHiRokidSession(
         onQueryResult = onResult
         onQueryComplete = onComplete
         onBusyChanged(true)
-        queryNext(authToken)
+        queryNext(authToken, targetHostApp)
     }
 
     fun cleanup() {
@@ -158,6 +182,8 @@ class CxrLHiRokidSession(
         pendingUpload = null
         pendingInstallResult = null
         pendingQueryPackage = null
+        activeQueryToken = null
+        activeQueryHostApp = null
         cxrlConnected = false
         glassBtConnected = false
         uploadStarted = false
@@ -166,6 +192,7 @@ class CxrLHiRokidSession(
 
     private fun connectAndUpload(
         authToken: String,
+        targetHostApp: RokidHostApp,
         packageName: String,
         apkFile: File,
         onInstallResult: ((Boolean) -> Unit)?,
@@ -206,7 +233,7 @@ class CxrLHiRokidSession(
         timeoutJob = activity.lifecycleScope.launch {
             delay(90_000)
             if (pendingUpload != null) {
-                onStatus("Timed out waiting for Hi Rokid install result.")
+                onStatus("Timed out waiting for ${targetHostApp.displayName} install result.")
                 cleanup()
                 onBusyChanged(false)
                 onInstallResult?.invoke(false)
@@ -224,25 +251,25 @@ class CxrLHiRokidSession(
             return
         }
 
-        onStatus("Binding to global Hi Rokid service...")
-        if (!bindGlobalHiRokidService(link, authToken)) {
+        onStatus("Binding to ${targetHostApp.displayName} service...")
+        if (!bindRokidHostService(link, targetHostApp, authToken)) {
             pendingUpload = null
             onBusyChanged(false)
-            onStatus("Hi Rokid service bind failed. Open Hi Rokid, then retry.")
+            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
             onInstallResult?.invoke(false)
         }
     }
 
-    private fun queryNext(authToken: String) {
+    private fun queryNext(authToken: String, targetHostApp: RokidHostApp) {
         val packageName = queryQueue.pollFirst()
         if (packageName == null) {
             finishQueries()
             return
         }
-        connectAndQuery(authToken, packageName)
+        connectAndQuery(authToken, targetHostApp, packageName)
     }
 
-    private fun connectAndQuery(authToken: String, packageName: String) {
+    private fun connectAndQuery(authToken: String, targetHostApp: RokidHostApp, packageName: String) {
         cleanup()
         val link = CXRLink(activity.applicationContext).also { newLink ->
             newLink.setCXRLinkCbk(object : ICXRLinkCbk {
@@ -268,6 +295,8 @@ class CxrLHiRokidSession(
         }
 
         pendingQueryPackage = packageName
+        activeQueryToken = authToken
+        activeQueryHostApp = targetHostApp
         pendingUpload = null
         cxrlConnected = false
         glassBtConnected = false
@@ -278,7 +307,7 @@ class CxrLHiRokidSession(
             if (pendingQueryPackage == packageName) {
                 onStatus("Timed out querying $packageName.")
                 onQueryResult?.invoke(packageName, false)
-                queryNext(authToken)
+                queryNext(authToken, targetHostApp)
             }
         }
 
@@ -288,12 +317,12 @@ class CxrLHiRokidSession(
         if (!configured) {
             onStatus("Failed to configure query for $packageName.")
             onQueryResult?.invoke(packageName, false)
-            queryNext(authToken)
+            queryNext(authToken, targetHostApp)
             return
         }
 
-        if (!bindGlobalHiRokidService(link, authToken)) {
-            onStatus("Hi Rokid service bind failed. Open Hi Rokid, then retry.")
+        if (!bindRokidHostService(link, targetHostApp, authToken)) {
+            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
             finishQueries()
         }
     }
@@ -343,7 +372,7 @@ class CxrLHiRokidSession(
                     timeoutJob?.cancel()
                     timeoutJob = null
                     onQueryResult?.invoke(packageName, installed)
-                    queryNext(token.orEmpty())
+                    queryNext(activeQueryToken.orEmpty(), activeQueryHostApp ?: hostApp)
                 }
             }
         })
@@ -359,10 +388,10 @@ class CxrLHiRokidSession(
         complete?.invoke()
     }
 
-    private fun bindGlobalHiRokidService(link: CXRLink, authToken: String): Boolean {
+    private fun bindRokidHostService(link: CXRLink, targetHostApp: RokidHostApp, authToken: String): Boolean {
         return runCatching {
             val intent = Intent(MEDIA_SERVICE_ACTION)
-                .setPackage(GLOBAL_AI_APP_PACKAGE)
+                .setPackage(targetHostApp.packageName)
                 .putExtra(AUTH_TOKEN_EXTRA, authToken)
                 .putExtra(AUTH_PACKAGE_EXTRA, activity.packageName)
             activity.applicationContext.bindService(intent, findServiceConnection(link), Context.BIND_AUTO_CREATE)
@@ -380,17 +409,6 @@ class CxrLHiRokidSession(
             type = type.superclass
         }
         error("CXR-L ServiceConnection field not found")
-    }
-
-    private fun isGlobalHiRokidInstalled(): Boolean {
-        return runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                activity.packageManager.getPackageInfo(GLOBAL_AI_APP_PACKAGE, PackageManager.PackageInfoFlags.of(0))
-            } else {
-                @Suppress("DEPRECATION")
-                activity.packageManager.getPackageInfo(GLOBAL_AI_APP_PACKAGE, 0)
-            }
-        }.isSuccess
     }
 
     private fun isWifiEnabled(): Boolean {

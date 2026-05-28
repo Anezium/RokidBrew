@@ -138,6 +138,8 @@ import java.util.Date
 import java.util.Locale
 
 private const val NEW_CATEGORY = "New"
+private const val PREFS_NAME = "rokidbrew_preferences"
+private const val PREF_ROKID_HOST_APP = "rokid_host_app"
 
 class MainActivity : AppCompatActivity() {
     private enum class Section { PHONE, GLASSES }
@@ -162,6 +164,7 @@ class MainActivity : AppCompatActivity() {
     private var updateVersion by mutableStateOf("")
     private var updateApkUrl by mutableStateOf("")
     private var updateDownloading by mutableStateOf(false)
+    private var selectedHostApp by mutableStateOf(RokidHostApp.DEFAULT)
 
     private val permissions: Array<String>
         get() = buildList {
@@ -193,19 +196,26 @@ class MainActivity : AppCompatActivity() {
         downloader = ApkDownloader(this)
         iconLoader = IconLoader(this)
         mediaLoader = MediaLoader(this)
+        selectedHostApp = loadSelectedHostApp()
         cxrL = CxrLHiRokidSession(
             activity = this,
             onStatus = ::log,
             onBusyChanged = ::updateBusy,
+            initialHostApp = selectedHostApp,
         )
         apps = BrewIndex.loadInitial(this)
 
         setContent {
             RokidBrewTheme {
+                val hostAppInstalled by produceState(false, selectedHostApp, installCheckTick) {
+                    value = withContext(Dispatchers.IO) { cxrL.isHostAppInstalled(selectedHostApp) }
+                }
                 BrewPhoneApp(
                     apps = apps,
                     busy = busy,
                     refreshing = refreshing,
+                    selectedHostApp = selectedHostApp,
+                    hostAppInstalled = hostAppInstalled,
                     installCheckTick = installCheckTick,
                     statusLines = statusLines,
                     statusExpanded = statusExpanded,
@@ -215,6 +225,7 @@ class MainActivity : AppCompatActivity() {
                     mediaLoader = mediaLoader,
                     onToggleStatus = { statusExpanded = !statusExpanded },
                     onRefresh = { refreshStoreIndex(manual = true) },
+                    onHostAppSelected = ::selectRokidHostApp,
                     onAuthorize = { runWithPrerequisites { cxrL.requestAuthorization() } },
                     onInstall = { app, target ->
                         if (target == "glasses") {
@@ -237,7 +248,7 @@ class MainActivity : AppCompatActivity() {
         }
         warmAssets(apps)
         refreshStoreIndex(manual = false)
-        log("Ready. Authorize Hi Rokid before installing glasses APKs.")
+        log("Ready. Authorize ${selectedHostApp.displayName} before installing glasses APKs.")
     }
 
     override fun onStart() {
@@ -403,6 +414,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun loadSelectedHostApp(): RokidHostApp {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        return RokidHostApp.fromId(prefs.getString(PREF_ROKID_HOST_APP, null))
+    }
+
+    private fun selectRokidHostApp(hostApp: RokidHostApp) {
+        if (selectedHostApp == hostApp) return
+        selectedHostApp = hostApp
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(PREF_ROKID_HOST_APP, hostApp.id)
+            .apply()
+        cxrL.selectHostApp(hostApp)
+        glassesInstallStates.clear()
+        installCheckTick += 1
+        log("CXR-L host set to ${hostApp.displayName}. Authorize again before glasses installs.")
+    }
+
     private fun log(message: String) {
         runOnUiThread {
             val line = "[${timeFormat.format(Date())}] $message"
@@ -439,6 +468,8 @@ private fun BrewPhoneApp(
     apps: List<BrewApp>,
     busy: Boolean,
     refreshing: Boolean,
+    selectedHostApp: RokidHostApp,
+    hostAppInstalled: Boolean,
     installCheckTick: Int,
     statusLines: List<String>,
     statusExpanded: Boolean,
@@ -448,6 +479,7 @@ private fun BrewPhoneApp(
     mediaLoader: MediaLoader,
     onToggleStatus: () -> Unit,
     onRefresh: () -> Unit,
+    onHostAppSelected: (RokidHostApp) -> Unit,
     onAuthorize: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
 ) {
@@ -520,6 +552,9 @@ private fun BrewPhoneApp(
             Header(
                 busy = busy,
                 refreshing = refreshing,
+                selectedHostApp = selectedHostApp,
+                hostAppInstalled = hostAppInstalled,
+                onHostAppSelected = onHostAppSelected,
                 onAuthorize = onAuthorize,
                 onRefresh = onRefresh,
                 onReset = {
@@ -605,6 +640,9 @@ private fun BrewPhoneApp(
 private fun Header(
     busy: Boolean,
     refreshing: Boolean,
+    selectedHostApp: RokidHostApp,
+    hostAppInstalled: Boolean,
+    onHostAppSelected: (RokidHostApp) -> Unit,
     onAuthorize: () -> Unit,
     onRefresh: () -> Unit,
     onReset: () -> Unit,
@@ -657,14 +695,21 @@ private fun Header(
             lineHeight = 18.sp,
             modifier = Modifier.padding(top = 10.dp),
         )
+        HostAppPicker(
+            selectedHostApp = selectedHostApp,
+            installed = hostAppInstalled,
+            enabled = !busy,
+            onSelect = onHostAppSelected,
+            modifier = Modifier.padding(top = 18.dp),
+        )
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 24.dp),
+                .padding(top = 16.dp),
         ) {
             BrewButton(
-                label = "Authorize",
+                label = "Authorize ${selectedHostApp.shortLabel}",
                 primary = false,
                 enabled = !busy,
                 icon = { Icon(Icons.Outlined.Security, null, modifier = Modifier.size(22.dp)) },
@@ -672,6 +717,90 @@ private fun Header(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+@Composable
+private fun HostAppPicker(
+    selectedHostApp: RokidHostApp,
+    installed: Boolean,
+    enabled: Boolean,
+    onSelect: (RokidHostApp) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("CXR-L host", color = BrewMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                selectedHostApp.packageName,
+                color = BrewDim,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Badge(if (installed) "INSTALLED" else "MISSING", color = if (installed) BrewGreen else BrewAmber)
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 9.dp)
+                .height(50.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(BrewPanel.copy(alpha = 0.64f))
+                .border(1.dp, BrewBorder, RoundedCornerShape(16.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            RokidHostApp.values().forEach { hostApp ->
+                HostAppSegment(
+                    hostApp = hostApp,
+                    selected = hostApp == selectedHostApp,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelect(hostApp) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HostAppSegment(
+    hostApp: RokidHostApp,
+    selected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    val color = when {
+        selected -> BrewGreen
+        enabled -> BrewTextBright
+        else -> BrewDim
+    }
+    Row(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(13.dp))
+            .background(if (selected) BrewGreen.copy(alpha = 0.12f) else Color.Transparent)
+            .border(if (selected) 1.dp else 0.dp, if (selected) BrewGreenDim else Color.Transparent, RoundedCornerShape(13.dp))
+            .clickable(enabled = enabled && !selected, onClick = onClick)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        val icon = if (hostApp == RokidHostApp.GLOBAL) Icons.Outlined.Public else Icons.Outlined.Psychology
+        Icon(icon, null, tint = color, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(7.dp))
+        Text(
+            hostApp.label,
+            color = color,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

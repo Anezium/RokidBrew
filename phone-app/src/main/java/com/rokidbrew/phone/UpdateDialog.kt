@@ -51,20 +51,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
-internal data class BrewSelfUpdateState(
-    val currentVersion: String = "",
-    val currentVersionCode: Long = 0L,
-    val latestVersion: String = "",
-    val latestVersionCode: Long? = null,
-    val apkUrl: String = "",
-    val releaseUrl: String = "",
-    val notes: String = "",
-    val changes: List<String> = emptyList(),
-    val available: Boolean = false,
-    val downloading: Boolean = false,
-    val downloadPercent: Int = 0,
-)
-
 @Composable
 internal fun UpdateDialog(
     version: String,

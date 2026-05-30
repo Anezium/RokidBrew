@@ -41,21 +41,13 @@ class CxrLHiRokidSession(
     private var hostApp: RokidHostApp = initialHostApp
     private var token: String? = null
     private var cxrLink: CXRLink? = null
-    private var pendingUpload: File? = null
-    private var pendingInstallResult: ((Boolean) -> Unit)? = null
-    private var pendingUninstallPackage: String? = null
-    private var pendingUninstallResult: ((Boolean) -> Unit)? = null
-    private var pendingQueryPackage: String? = null
-    private var activeQueryToken: String? = null
-    private var activeQueryHostApp: RokidHostApp? = null
+    private var pendingOperation: CxrAppOperation? = null
     private var queryQueue: ArrayDeque<String> = ArrayDeque()
     private var onQueryResult: ((String, Boolean) -> Unit)? = null
     private var onQueryComplete: (() -> Unit)? = null
     private var cxrlConnected = false
     private var glassBtConnected = false
-    private var uploadStarted = false
-    private var uninstallStarted = false
-    private var queryStarted = false
+    private var operationStarted = false
     private var timeoutJob: Job? = null
 
     fun hasAuthorization(): Boolean = !token.isNullOrBlank()
@@ -186,18 +178,10 @@ class CxrLHiRokidSession(
         timeoutJob = null
         runCatching { cxrLink?.disconnect() }
         cxrLink = null
-        pendingUpload = null
-        pendingInstallResult = null
-        pendingUninstallPackage = null
-        pendingUninstallResult = null
-        pendingQueryPackage = null
-        activeQueryToken = null
-        activeQueryHostApp = null
+        pendingOperation = null
         cxrlConnected = false
         glassBtConnected = false
-        uploadStarted = false
-        uninstallStarted = false
-        queryStarted = false
+        operationStarted = false
         notifyConnectionChanged()
     }
 
@@ -208,69 +192,35 @@ class CxrLHiRokidSession(
         apkFile: File,
         onInstallResult: ((Boolean) -> Unit)?,
     ) {
-        cleanup()
-        val link = CXRLink(activity.applicationContext).also { newLink ->
-            newLink.setCXRLinkCbk(object : ICXRLinkCbk {
-                override fun onCXRLConnected(connected: Boolean) {
-                    activity.runOnUiThread {
-                        cxrlConnected = connected
-                        onStatus("CXR-L service connected: $connected")
-                        notifyConnectionChanged()
-                        maybeUploadPending()
-                    }
-                }
-
-                override fun onGlassBtConnected(connected: Boolean) {
-                    activity.runOnUiThread {
-                        glassBtConnected = connected
-                        onStatus("Glasses Bluetooth connected: $connected")
-                        notifyConnectionChanged()
-                        maybeUploadPending()
-                    }
-                }
-
-                override fun onGlassAiAssistStart() = Unit
-                override fun onGlassAiAssistStop() = Unit
-            })
-            cxrLink = newLink
-            newLink
-        }
-
-        pendingUpload = apkFile
-        pendingInstallResult = onInstallResult
-        pendingQueryPackage = null
-        cxrlConnected = false
-        glassBtConnected = false
-        uploadStarted = false
-        queryStarted = false
-        timeoutJob = activity.lifecycleScope.launch {
-            delay(90_000)
-            if (pendingUpload != null) {
-                onStatus("Timed out waiting for ${targetHostApp.displayName} install result.")
-                cleanup()
-                onBusyChanged(false)
-                onInstallResult?.invoke(false)
-            }
-        }
-
-        val configured = link.configCXRSession(
-            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, packageName),
+        connectAndRunCustomAppOperation(
+            authToken = authToken,
+            targetHostApp = targetHostApp,
+            operation = CxrAppOperation(
+                packageName = packageName,
+                timeoutMillis = 90_000,
+                timeoutMessage = "Timed out waiting for ${targetHostApp.displayName} install result.",
+                bindMessage = "Binding to ${targetHostApp.displayName} service...",
+                configureFailureMessage = "Failed to configure CXR-L CUSTOMAPP session.",
+                bindFailureMessage = "${targetHostApp.displayName} service bind failed. Open it, then retry.",
+                showConnectionStatus = true,
+                onReady = { link ->
+                    onStatus("CXR-L ready. Uploading and installing on glasses...")
+                    link.appUploadAndInstall(apkFile.absolutePath, glassAppCallback(
+                        onInstall = { success ->
+                            completeActiveOperation()
+                            onStatus(if (success) "Glasses install succeeded." else "Glasses install failed.")
+                            onBusyChanged(false)
+                            onInstallResult?.invoke(success)
+                        },
+                    ))
+                },
+                onFailure = {
+                    cleanup()
+                    onBusyChanged(false)
+                    onInstallResult?.invoke(false)
+                },
+            ),
         )
-        if (!configured) {
-            pendingUpload = null
-            onBusyChanged(false)
-            onStatus("Failed to configure CXR-L CUSTOMAPP session.")
-            onInstallResult?.invoke(false)
-            return
-        }
-
-        onStatus("Binding to ${targetHostApp.displayName} service...")
-        if (!bindRokidHostService(link, targetHostApp, authToken)) {
-            pendingUpload = null
-            onBusyChanged(false)
-            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
-            onInstallResult?.invoke(false)
-        }
     }
 
     private fun queryNext(authToken: String, targetHostApp: RokidHostApp) {
@@ -283,63 +233,33 @@ class CxrLHiRokidSession(
     }
 
     private fun connectAndQuery(authToken: String, targetHostApp: RokidHostApp, packageName: String) {
-        cleanup()
-        val link = CXRLink(activity.applicationContext).also { newLink ->
-            newLink.setCXRLinkCbk(object : ICXRLinkCbk {
-                override fun onCXRLConnected(connected: Boolean) {
-                    activity.runOnUiThread {
-                        cxrlConnected = connected
-                        notifyConnectionChanged()
-                        maybeQueryPending()
-                    }
-                }
-
-                override fun onGlassBtConnected(connected: Boolean) {
-                    activity.runOnUiThread {
-                        glassBtConnected = connected
-                        notifyConnectionChanged()
-                        maybeQueryPending()
-                    }
-                }
-
-                override fun onGlassAiAssistStart() = Unit
-                override fun onGlassAiAssistStop() = Unit
-            })
-            cxrLink = newLink
-            newLink
-        }
-
-        pendingQueryPackage = packageName
-        activeQueryToken = authToken
-        activeQueryHostApp = targetHostApp
-        pendingUpload = null
-        cxrlConnected = false
-        glassBtConnected = false
-        uploadStarted = false
-        queryStarted = false
-        timeoutJob = activity.lifecycleScope.launch {
-            delay(30_000)
-            if (pendingQueryPackage == packageName) {
-                onStatus("Timed out querying $packageName.")
-                onQueryResult?.invoke(packageName, false)
-                queryNext(authToken, targetHostApp)
-            }
-        }
-
-        val configured = link.configCXRSession(
-            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, packageName),
+        connectAndRunCustomAppOperation(
+            authToken = authToken,
+            targetHostApp = targetHostApp,
+            operation = CxrAppOperation(
+                packageName = packageName,
+                timeoutMillis = 30_000,
+                timeoutMessage = "Timed out querying $packageName.",
+                configureFailureMessage = "Failed to configure query for $packageName.",
+                bindFailureMessage = "${targetHostApp.displayName} service bind failed. Open it, then retry.",
+                onReady = { link ->
+                    link.appIsInstalled(glassAppCallback(
+                        onQuery = { installed ->
+                            completeActiveOperation()
+                            onQueryResult?.invoke(packageName, installed)
+                            queryNext(authToken, targetHostApp)
+                        },
+                    ))
+                },
+                onFailure = {
+                    onQueryResult?.invoke(packageName, false)
+                    queryNext(authToken, targetHostApp)
+                },
+                onBindFailure = {
+                    finishQueries()
+                },
+            ),
         )
-        if (!configured) {
-            onStatus("Failed to configure query for $packageName.")
-            onQueryResult?.invoke(packageName, false)
-            queryNext(authToken, targetHostApp)
-            return
-        }
-
-        if (!bindRokidHostService(link, targetHostApp, authToken)) {
-            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
-            finishQueries()
-        }
     }
 
     private fun connectAndUninstall(
@@ -348,24 +268,60 @@ class CxrLHiRokidSession(
         packageName: String,
         onUninstallResult: ((Boolean) -> Unit)?,
     ) {
+        connectAndRunCustomAppOperation(
+            authToken = authToken,
+            targetHostApp = targetHostApp,
+            operation = CxrAppOperation(
+                packageName = packageName,
+                timeoutMillis = 60_000,
+                timeoutMessage = "Timed out uninstalling $packageName from glasses.",
+                bindMessage = "Binding to ${targetHostApp.displayName} service...",
+                configureFailureMessage = "Failed to configure uninstall for $packageName.",
+                bindFailureMessage = "${targetHostApp.displayName} service bind failed. Open it, then retry.",
+                showConnectionStatus = true,
+                onReady = { link ->
+                    onStatus("CXR-L ready. Uninstalling $packageName from glasses...")
+                    link.appUninstall(glassAppCallback(
+                        onUninstall = { success ->
+                            completeActiveOperation()
+                            onStatus(if (success) "Glasses uninstall succeeded." else "Glasses uninstall failed.")
+                            onBusyChanged(false)
+                            onUninstallResult?.invoke(success)
+                        },
+                    ))
+                },
+                onFailure = {
+                    cleanup()
+                    onBusyChanged(false)
+                    onUninstallResult?.invoke(false)
+                },
+            ),
+        )
+    }
+
+    private fun connectAndRunCustomAppOperation(
+        authToken: String,
+        targetHostApp: RokidHostApp,
+        operation: CxrAppOperation,
+    ) {
         cleanup()
         val link = CXRLink(activity.applicationContext).also { newLink ->
             newLink.setCXRLinkCbk(object : ICXRLinkCbk {
                 override fun onCXRLConnected(connected: Boolean) {
                     activity.runOnUiThread {
                         cxrlConnected = connected
-                        onStatus("CXR-L service connected: $connected")
+                        if (operation.showConnectionStatus) onStatus("CXR-L service connected: $connected")
                         notifyConnectionChanged()
-                        maybeUninstallPending()
+                        maybeRunPendingOperation()
                     }
                 }
 
                 override fun onGlassBtConnected(connected: Boolean) {
                     activity.runOnUiThread {
                         glassBtConnected = connected
-                        onStatus("Glasses Bluetooth connected: $connected")
+                        if (operation.showConnectionStatus) onStatus("Glasses Bluetooth connected: $connected")
                         notifyConnectionChanged()
-                        maybeUninstallPending()
+                        maybeRunPendingOperation()
                     }
                 }
 
@@ -376,124 +332,89 @@ class CxrLHiRokidSession(
             newLink
         }
 
-        pendingUninstallPackage = packageName
-        pendingUninstallResult = onUninstallResult
-        pendingUpload = null
-        pendingQueryPackage = null
+        pendingOperation = operation
         cxrlConnected = false
         glassBtConnected = false
-        uploadStarted = false
-        uninstallStarted = false
-        queryStarted = false
+        operationStarted = false
         timeoutJob = activity.lifecycleScope.launch {
-            delay(60_000)
-            if (pendingUninstallPackage == packageName) {
-                onStatus("Timed out uninstalling $packageName from glasses.")
-                cleanup()
-                onBusyChanged(false)
-                onUninstallResult?.invoke(false)
+            delay(operation.timeoutMillis)
+            if (pendingOperation === operation) {
+                pendingOperation = null
+                operationStarted = false
+                onStatus(operation.timeoutMessage)
+                operation.onFailure()
             }
         }
 
         val configured = link.configCXRSession(
-            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, packageName),
+            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, operation.packageName),
         )
         if (!configured) {
-            pendingUninstallPackage = null
-            onBusyChanged(false)
-            onStatus("Failed to configure uninstall for $packageName.")
-            onUninstallResult?.invoke(false)
+            pendingOperation = null
+            operationStarted = false
+            onStatus(operation.configureFailureMessage)
+            operation.onFailure()
             return
         }
 
-        onStatus("Binding to ${targetHostApp.displayName} service...")
+        operation.bindMessage?.let(onStatus)
         if (!bindRokidHostService(link, targetHostApp, authToken)) {
-            pendingUninstallPackage = null
-            onBusyChanged(false)
-            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
-            onUninstallResult?.invoke(false)
+            pendingOperation = null
+            operationStarted = false
+            onStatus(operation.bindFailureMessage)
+            operation.onBindFailure()
         }
     }
 
-    private fun maybeUploadPending() {
-        val apkFile = pendingUpload ?: return
-        if (uploadStarted || !cxrlConnected || !glassBtConnected) return
-
-        uploadStarted = true
-        onStatus("CXR-L ready. Uploading and installing on glasses...")
-        cxrLink?.appUploadAndInstall(apkFile.absolutePath, object : IGlassAppCbk {
-            override fun onInstallAppResult(success: Boolean) {
-                activity.runOnUiThread {
-                    timeoutJob?.cancel()
-                    timeoutJob = null
-                    pendingUpload = null
-                    uploadStarted = false
-                    onStatus(if (success) "Glasses install succeeded." else "Glasses install failed.")
-                    onBusyChanged(false)
-                    pendingInstallResult?.invoke(success)
-                    pendingInstallResult = null
-                }
-            }
-
-            override fun onUnInstallAppResult(success: Boolean) = Unit
-            override fun onOpenAppResult(success: Boolean) = Unit
-            override fun onStopAppResult(success: Boolean) = Unit
-            override fun onGlassAppResume(resumed: Boolean) = Unit
-            override fun onQueryAppResult(installed: Boolean) = Unit
-        })
+    private fun maybeRunPendingOperation() {
+        val operation = pendingOperation ?: return
+        if (operationStarted || !cxrlConnected || !glassBtConnected) return
+        val link = cxrLink ?: return
+        operationStarted = true
+        operation.onReady(link)
     }
 
-    private fun maybeUninstallPending() {
-        val packageName = pendingUninstallPackage ?: return
-        if (uninstallStarted || !cxrlConnected || !glassBtConnected) return
-
-        uninstallStarted = true
-        onStatus("CXR-L ready. Uninstalling $packageName from glasses...")
-        cxrLink?.appUninstall(object : IGlassAppCbk {
-            override fun onInstallAppResult(success: Boolean) = Unit
-
-            override fun onUnInstallAppResult(success: Boolean) {
-                activity.runOnUiThread {
-                    timeoutJob?.cancel()
-                    timeoutJob = null
-                    pendingUninstallPackage = null
-                    uninstallStarted = false
-                    onStatus(if (success) "Glasses uninstall succeeded." else "Glasses uninstall failed.")
-                    onBusyChanged(false)
-                    pendingUninstallResult?.invoke(success)
-                    pendingUninstallResult = null
-                }
-            }
-
-            override fun onOpenAppResult(success: Boolean) = Unit
-            override fun onStopAppResult(success: Boolean) = Unit
-            override fun onGlassAppResume(resumed: Boolean) = Unit
-            override fun onQueryAppResult(installed: Boolean) = Unit
-        })
+    private fun completeActiveOperation() {
+        timeoutJob?.cancel()
+        timeoutJob = null
+        pendingOperation = null
+        operationStarted = false
     }
 
-    private fun maybeQueryPending() {
-        val packageName = pendingQueryPackage ?: return
-        if (queryStarted || !cxrlConnected || !glassBtConnected) return
+    private fun glassAppCallback(
+        onInstall: (Boolean) -> Unit = {},
+        onUninstall: (Boolean) -> Unit = {},
+        onQuery: (Boolean) -> Unit = {},
+    ): IGlassAppCbk = object : IGlassAppCbk {
+        override fun onInstallAppResult(success: Boolean) {
+            activity.runOnUiThread { onInstall(success) }
+        }
 
-        queryStarted = true
-        cxrLink?.appIsInstalled(object : IGlassAppCbk {
-            override fun onInstallAppResult(success: Boolean) = Unit
-            override fun onUnInstallAppResult(success: Boolean) = Unit
-            override fun onOpenAppResult(success: Boolean) = Unit
-            override fun onStopAppResult(success: Boolean) = Unit
-            override fun onGlassAppResume(resumed: Boolean) = Unit
+        override fun onUnInstallAppResult(success: Boolean) {
+            activity.runOnUiThread { onUninstall(success) }
+        }
 
-            override fun onQueryAppResult(installed: Boolean) {
-                activity.runOnUiThread {
-                    timeoutJob?.cancel()
-                    timeoutJob = null
-                    onQueryResult?.invoke(packageName, installed)
-                    queryNext(activeQueryToken.orEmpty(), activeQueryHostApp ?: hostApp)
-                }
-            }
-        })
+        override fun onOpenAppResult(success: Boolean) = Unit
+        override fun onStopAppResult(success: Boolean) = Unit
+        override fun onGlassAppResume(resumed: Boolean) = Unit
+
+        override fun onQueryAppResult(installed: Boolean) {
+            activity.runOnUiThread { onQuery(installed) }
+        }
     }
+
+    private data class CxrAppOperation(
+        val packageName: String,
+        val timeoutMillis: Long,
+        val timeoutMessage: String,
+        val configureFailureMessage: String,
+        val bindFailureMessage: String,
+        val bindMessage: String? = null,
+        val showConnectionStatus: Boolean = false,
+        val onReady: (CXRLink) -> Unit,
+        val onFailure: () -> Unit,
+        val onBindFailure: () -> Unit = onFailure,
+    )
 
     private fun finishQueries() {
         val complete = onQueryComplete

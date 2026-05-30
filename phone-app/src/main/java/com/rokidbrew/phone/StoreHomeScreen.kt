@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -60,30 +62,66 @@ import java.util.Locale
 
 private const val COLLAPSED_APP_COUNT = 5
 
+internal data class StoreUiState(
+    val apps: List<BrewApp>,
+    val busy: Boolean,
+    val refreshing: Boolean,
+    val selectedHostApp: RokidHostApp,
+    val hostAppInstalled: Boolean,
+    val cxrConnection: CxrConnectionState,
+    val statusLines: List<String>,
+    val statusExpanded: Boolean,
+    val downloadProgress: Map<String, Int>,
+    val phoneInstallStates: Map<String, MainActivity.InstallState>,
+    val glassesInstallStates: Map<String, MainActivity.InstallState>,
+    val selfUpdateState: BrewSelfUpdateState,
+)
+
+internal data class StoreActions(
+    val onToggleStatus: () -> Unit,
+    val onRefresh: () -> Unit,
+    val onHostAppSelected: (RokidHostApp) -> Unit,
+    val onAuthorize: () -> Unit,
+    val onInstall: (BrewApp, String) -> Unit,
+    val onCheckGlassesInstall: (BrewApp) -> Unit,
+    val onUninstall: (BrewApp, String) -> Unit,
+    val onSelfUpdate: () -> Unit,
+)
+
+private data class StoreHomeViewState(
+    val categoryFilter: String?,
+    val query: String,
+    val searchVisible: Boolean,
+    val appListExpanded: Boolean,
+    val showingFeaturedList: Boolean,
+    val updateSheetVisible: Boolean,
+    val selectedApp: BrewApp?,
+)
+
+private data class StoreHomeViewActions(
+    val setCategoryFilter: (String?) -> Unit,
+    val setQuery: (String) -> Unit,
+    val setAppListExpanded: (Boolean) -> Unit,
+    val setShowingFeaturedList: (Boolean) -> Unit,
+    val setUpdateSheetVisible: (Boolean) -> Unit,
+    val setSelectedApp: (BrewApp?) -> Unit,
+    val toggleSearch: () -> Unit,
+    val resetFilters: () -> Unit,
+    val showFeaturedList: () -> Unit,
+)
+
+private data class StoreHomeLists(
+    val visibleApps: List<BrewApp>,
+    val categories: List<String>,
+    val featuredApps: List<BrewApp>,
+)
+
 @Composable
 internal fun BrewPhoneApp(
-    apps: List<BrewApp>,
-    busy: Boolean,
-    refreshing: Boolean,
-    selectedHostApp: RokidHostApp,
-    hostAppInstalled: Boolean,
-    cxrConnection: CxrConnectionState,
-    statusLines: List<String>,
-    statusExpanded: Boolean,
-    downloadProgress: Map<String, Int>,
-    phoneInstallStates: Map<String, MainActivity.InstallState>,
-    glassesInstallStates: Map<String, MainActivity.InstallState>,
+    state: StoreUiState,
+    actions: StoreActions,
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
-    onToggleStatus: () -> Unit,
-    onRefresh: () -> Unit,
-    onHostAppSelected: (RokidHostApp) -> Unit,
-    onAuthorize: () -> Unit,
-    onInstall: (BrewApp, String) -> Unit,
-    onCheckGlassesInstall: (BrewApp) -> Unit,
-    onUninstall: (BrewApp, String) -> Unit,
-    selfUpdateState: BrewSelfUpdateState,
-    onSelfUpdate: () -> Unit,
 ) {
     var categoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -93,47 +131,92 @@ internal fun BrewPhoneApp(
     var updateSheetVisible by rememberSaveable { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<BrewApp?>(null) }
     val listState = rememberLazyListState()
+    val viewState = StoreHomeViewState(
+        categoryFilter = categoryFilter,
+        query = query,
+        searchVisible = searchVisible,
+        appListExpanded = appListExpanded,
+        showingFeaturedList = showingFeaturedList,
+        updateSheetVisible = updateSheetVisible,
+        selectedApp = selectedApp,
+    )
+    val viewActions = StoreHomeViewActions(
+        setCategoryFilter = { categoryFilter = it },
+        setQuery = { query = it },
+        setAppListExpanded = { appListExpanded = it },
+        setShowingFeaturedList = { showingFeaturedList = it },
+        setUpdateSheetVisible = { updateSheetVisible = it },
+        setSelectedApp = { selectedApp = it },
+        toggleSearch = {
+            val nextVisible = !searchVisible
+            searchVisible = nextVisible
+            if (!nextVisible) {
+                query = ""
+                appListExpanded = false
+            }
+        },
+        resetFilters = {
+            categoryFilter = null
+            query = ""
+            searchVisible = false
+            appListExpanded = false
+        },
+        showFeaturedList = {
+            showingFeaturedList = true
+            categoryFilter = null
+            query = ""
+            searchVisible = false
+            appListExpanded = false
+        },
+    )
 
-    BackHandler(enabled = updateSheetVisible || selectedApp != null || showingFeaturedList) {
-        if (updateSheetVisible) {
-            updateSheetVisible = false
-        } else if (selectedApp != null) {
-            selectedApp = null
+    BackHandler(enabled = viewState.updateSheetVisible || viewState.selectedApp != null || viewState.showingFeaturedList) {
+        if (viewState.updateSheetVisible) {
+            viewActions.setUpdateSheetVisible(false)
+        } else if (viewState.selectedApp != null) {
+            viewActions.setSelectedApp(null)
         } else {
-            showingFeaturedList = false
+            viewActions.setShowingFeaturedList(false)
         }
     }
 
-    val visibleApps = remember(apps, categoryFilter, query) {
-        apps.filter { app ->
-            val categoryOk = categoryFilter == null ||
-                (categoryFilter == NEW_CATEGORY && app.isNew) ||
-                app.category.equals(categoryFilter, ignoreCase = true)
-            val searchOk = query.isBlank() ||
-                app.name.contains(query, ignoreCase = true) ||
-                app.author.contains(query, ignoreCase = true) ||
-                app.category.contains(query, ignoreCase = true) ||
-                app.summary.contains(query, ignoreCase = true) ||
-                app.description.contains(query, ignoreCase = true)
+    val visibleApps = remember(state.apps, viewState.categoryFilter, viewState.query) {
+        state.apps.filter { app ->
+            val categoryOk = viewState.categoryFilter == null ||
+                (viewState.categoryFilter == NEW_CATEGORY && app.isNew) ||
+                app.category.equals(viewState.categoryFilter, ignoreCase = true)
+            val searchOk = viewState.query.isBlank() ||
+                app.name.contains(viewState.query, ignoreCase = true) ||
+                app.author.contains(viewState.query, ignoreCase = true) ||
+                app.category.contains(viewState.query, ignoreCase = true) ||
+                app.summary.contains(viewState.query, ignoreCase = true) ||
+                app.description.contains(viewState.query, ignoreCase = true)
             categoryOk && searchOk
         }
     }
-    val categories = remember(apps) {
+    val categories = remember(state.apps) {
         buildList {
-            if (apps.any { it.isNew }) add(NEW_CATEGORY)
-            addAll(apps.map { it.category }.distinct().sorted())
+            if (state.apps.any { it.isNew }) add(NEW_CATEGORY)
+            addAll(state.apps.map { it.category }.distinct().sorted())
         }
     }
-    val featuredApps = remember(apps) {
-        apps.curatedHeroApps().ifEmpty { apps.take(6) }
+    val featuredApps = remember(state.apps) {
+        state.apps.curatedHeroApps().ifEmpty { state.apps.take(6) }
     }
+    val lists = StoreHomeLists(
+        visibleApps = visibleApps,
+        categories = categories,
+        featuredApps = featuredApps,
+    )
 
-    LaunchedEffect(showingFeaturedList) {
+    LaunchedEffect(viewState.showingFeaturedList) {
         listState.scrollToItem(0)
     }
 
-    LaunchedEffect(selectedApp?.id) {
-        selectedApp?.takeIf { it.hasTarget("glasses") }?.let(onCheckGlassesInstall)
+    LaunchedEffect(viewState.selectedApp?.id, state.cxrConnection.authorized) {
+        viewState.selectedApp
+            ?.takeIf { it.hasTarget("glasses") }
+            ?.let(actions.onCheckGlassesInstall)
     }
 
     Box(
@@ -148,177 +231,199 @@ internal fun BrewPhoneApp(
                 ),
             ),
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 18.dp),
-            contentPadding = PaddingValues(top = 14.dp, bottom = 132.dp),
-        ) {
-            if (showingFeaturedList) {
-                item(key = "featured-page-header") {
-                    FeaturedListTopBar(
-                        count = featuredApps.size,
-                        onBack = { showingFeaturedList = false },
-                    )
-                }
-                appListItems(
-                    apps = featuredApps,
-                    expanded = true,
-                    showToggle = false,
-                    iconLoader = iconLoader,
-                    mediaLoader = mediaLoader,
-                    busy = busy,
-                    progress = downloadProgress,
-                    phoneInstallStates = phoneInstallStates,
-                    glassesInstallStates = glassesInstallStates,
-                    onExpandedChange = {},
-                    onOpen = { selectedApp = it },
-                    onInstall = onInstall,
-                    topPadding = 14,
-                )
-            } else {
-                item(key = "header") {
-                    Header(
-                        refreshing = refreshing,
-                        searchActive = searchVisible || query.isNotBlank(),
-                        onSearchToggle = {
-                            val nextVisible = !searchVisible
-                            searchVisible = nextVisible
-                            if (!nextVisible) {
-                                query = ""
-                                appListExpanded = false
-                            }
-                        },
-                        updateAvailable = selfUpdateState.available,
-                        onUpdateOpen = { updateSheetVisible = true },
-                        onRefresh = onRefresh,
-                        onReset = {
-                            categoryFilter = null
-                            query = ""
-                            searchVisible = false
-                            appListExpanded = false
-                        },
-                    )
-                }
-                item(key = "search") {
-                    AnimatedVisibility(
-                        visible = searchVisible || query.isNotBlank(),
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                    ) {
-                        SearchBar(
-                            query = query,
-                            onQueryChange = {
-                                query = it
-                                categoryFilter = null
-                                appListExpanded = false
-                            },
-                        )
-                    }
-                }
-                item(key = "connection") {
-                    ConnectionPanel(
-                        selectedHostApp = selectedHostApp,
-                        hostAppInstalled = hostAppInstalled,
-                        cxrConnection = cxrConnection,
-                        busy = busy,
-                        onHostAppSelected = onHostAppSelected,
-                        onAuthorize = onAuthorize,
-                    )
-                }
-                if (featuredApps.isNotEmpty()) {
-                    item(key = "featured") {
-                        FeaturedShelf(
-                            apps = featuredApps.take(8),
-                            iconLoader = iconLoader,
-                            mediaLoader = mediaLoader,
-                            onOpen = { selectedApp = it },
-                            onViewAll = {
-                                showingFeaturedList = true
-                                categoryFilter = null
-                                query = ""
-                                searchVisible = false
-                                appListExpanded = false
-                            },
-                        )
-                    }
-                }
-                item(key = "categories") {
-                    CategoryStrip(
-                        categories = categories,
-                        selected = categoryFilter,
-                        onSelect = {
-                            categoryFilter = it
-                            appListExpanded = false
-                        },
-                    )
-                }
-                appListItems(
-                    apps = visibleApps,
-                    expanded = appListExpanded,
-                    showToggle = true,
-                    iconLoader = iconLoader,
-                    mediaLoader = mediaLoader,
-                    busy = busy,
-                    progress = downloadProgress,
-                    phoneInstallStates = phoneInstallStates,
-                    glassesInstallStates = glassesInstallStates,
-                    onExpandedChange = { appListExpanded = it },
-                    onOpen = { selectedApp = it },
-                    onInstall = onInstall,
-                    topPadding = 14,
+        HomeListContent(
+            listState = listState,
+            state = state,
+            actions = actions,
+            viewState = viewState,
+            viewActions = viewActions,
+            lists = lists,
+            iconLoader = iconLoader,
+            mediaLoader = mediaLoader,
+        )
+        StoreOverlays(
+            state = state,
+            actions = actions,
+            viewState = viewState,
+            viewActions = viewActions,
+            iconLoader = iconLoader,
+            mediaLoader = mediaLoader,
+        )
+    }
+}
+
+@Composable
+private fun HomeListContent(
+    listState: LazyListState,
+    state: StoreUiState,
+    actions: StoreActions,
+    viewState: StoreHomeViewState,
+    viewActions: StoreHomeViewActions,
+    lists: StoreHomeLists,
+    iconLoader: IconLoader,
+    mediaLoader: MediaLoader,
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 18.dp),
+        contentPadding = PaddingValues(top = 14.dp, bottom = 132.dp),
+    ) {
+        if (viewState.showingFeaturedList) {
+            item(key = "featured-page-header") {
+                FeaturedListTopBar(
+                    count = lists.featuredApps.size,
+                    onBack = { viewActions.setShowingFeaturedList(false) },
                 )
             }
-        }
-
-        StatusDock(
-            statusLines = statusLines,
-            expanded = statusExpanded,
-            busy = busy,
-            onToggle = onToggleStatus,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
-
-        AnimatedVisibility(
-            visible = selectedApp != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
-            DetailSheet(
-                app = selectedApp,
-                busy = busy,
-                progress = downloadProgress,
+            appListItems(
+                apps = lists.featuredApps,
+                expanded = true,
+                showToggle = false,
                 iconLoader = iconLoader,
                 mediaLoader = mediaLoader,
-                phoneInstallStates = phoneInstallStates,
-                glassesInstallStates = glassesInstallStates,
-                statusLines = statusLines,
-                statusExpanded = statusExpanded,
-                onToggleStatus = onToggleStatus,
-                onDismiss = { selectedApp = null },
-                onInstall = onInstall,
-                onUninstall = onUninstall,
+                busy = state.busy,
+                progress = state.downloadProgress,
+                phoneInstallStates = state.phoneInstallStates,
+                glassesInstallStates = state.glassesInstallStates,
+                onExpandedChange = {},
+                onOpen = viewActions.setSelectedApp,
+                onInstall = actions.onInstall,
+                topPadding = 14,
+            )
+        } else {
+            item(key = "header") {
+                Header(
+                    refreshing = state.refreshing,
+                    searchActive = viewState.searchVisible || viewState.query.isNotBlank(),
+                    onSearchToggle = viewActions.toggleSearch,
+                    updateAvailable = state.selfUpdateState.available,
+                    onUpdateOpen = { viewActions.setUpdateSheetVisible(true) },
+                    onRefresh = actions.onRefresh,
+                    onReset = viewActions.resetFilters,
+                )
+            }
+            item(key = "search") {
+                AnimatedVisibility(
+                    visible = viewState.searchVisible || viewState.query.isNotBlank(),
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                ) {
+                    SearchBar(
+                        query = viewState.query,
+                        onQueryChange = {
+                            viewActions.setQuery(it)
+                            viewActions.setCategoryFilter(null)
+                            viewActions.setAppListExpanded(false)
+                        },
+                    )
+                }
+            }
+            item(key = "connection") {
+                ConnectionPanel(
+                    selectedHostApp = state.selectedHostApp,
+                    hostAppInstalled = state.hostAppInstalled,
+                    cxrConnection = state.cxrConnection,
+                    busy = state.busy,
+                    onHostAppSelected = actions.onHostAppSelected,
+                    onAuthorize = actions.onAuthorize,
+                )
+            }
+            if (lists.featuredApps.isNotEmpty()) {
+                item(key = "featured") {
+                    FeaturedShelf(
+                        apps = lists.featuredApps.take(8),
+                        iconLoader = iconLoader,
+                        mediaLoader = mediaLoader,
+                        onOpen = viewActions.setSelectedApp,
+                        onViewAll = viewActions.showFeaturedList,
+                    )
+                }
+            }
+            item(key = "categories") {
+                CategoryStrip(
+                    categories = lists.categories,
+                    selected = viewState.categoryFilter,
+                    onSelect = {
+                        viewActions.setCategoryFilter(it)
+                        viewActions.setAppListExpanded(false)
+                    },
+                )
+            }
+            appListItems(
+                apps = lists.visibleApps,
+                expanded = viewState.appListExpanded,
+                showToggle = true,
+                iconLoader = iconLoader,
+                mediaLoader = mediaLoader,
+                busy = state.busy,
+                progress = state.downloadProgress,
+                phoneInstallStates = state.phoneInstallStates,
+                glassesInstallStates = state.glassesInstallStates,
+                onExpandedChange = viewActions.setAppListExpanded,
+                onOpen = viewActions.setSelectedApp,
+                onInstall = actions.onInstall,
+                topPadding = 14,
             )
         }
+    }
+}
 
-        AnimatedVisibility(
-            visible = updateSheetVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
-            UpdateSheet(
-                state = selfUpdateState,
-                statusLines = statusLines,
-                statusExpanded = statusExpanded,
-                onToggleStatus = onToggleStatus,
-                onDismiss = { updateSheetVisible = false },
-                onUpdate = onSelfUpdate,
-            )
-        }
+@Composable
+private fun BoxScope.StoreOverlays(
+    state: StoreUiState,
+    actions: StoreActions,
+    viewState: StoreHomeViewState,
+    viewActions: StoreHomeViewActions,
+    iconLoader: IconLoader,
+    mediaLoader: MediaLoader,
+) {
+    StatusDock(
+        statusLines = state.statusLines,
+        expanded = state.statusExpanded,
+        busy = state.busy,
+        onToggle = actions.onToggleStatus,
+        modifier = Modifier.align(Alignment.BottomCenter),
+    )
 
+    AnimatedVisibility(
+        visible = viewState.selectedApp != null,
+        enter = fadeIn(),
+        exit = fadeOut(),
+    ) {
+        DetailSheet(
+            app = viewState.selectedApp,
+            busy = state.busy,
+            progress = state.downloadProgress,
+            iconLoader = iconLoader,
+            mediaLoader = mediaLoader,
+            phoneInstallStates = state.phoneInstallStates,
+            glassesInstallStates = state.glassesInstallStates,
+            statusLines = state.statusLines,
+            statusExpanded = state.statusExpanded,
+            onToggleStatus = actions.onToggleStatus,
+            onDismiss = { viewActions.setSelectedApp(null) },
+            onInstall = actions.onInstall,
+            onUninstall = actions.onUninstall,
+        )
+    }
+
+    AnimatedVisibility(
+        visible = viewState.updateSheetVisible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+    ) {
+        UpdateSheet(
+            state = state.selfUpdateState,
+            statusLines = state.statusLines,
+            statusExpanded = state.statusExpanded,
+            onToggleStatus = actions.onToggleStatus,
+            onDismiss = { viewActions.setUpdateSheetVisible(false) },
+            onUpdate = actions.onSelfUpdate,
+        )
     }
 }
 

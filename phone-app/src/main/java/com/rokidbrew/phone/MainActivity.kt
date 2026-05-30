@@ -34,6 +34,7 @@ private const val PREF_ROKID_HOST_APP = "rokid_host_app"
 
 class MainActivity : AppCompatActivity() {
     enum class InstallState { UNKNOWN, NOT_INSTALLED, INSTALLED, INSTALLED_UNKNOWN_VERSION, UPDATE_AVAILABLE }
+    private enum class InstallStateSource { CACHED, VERIFIED }
 
     private lateinit var cxrL: CxrLHiRokidSession
     private lateinit var downloader: ApkDownloader
@@ -50,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private val downloadProgress = mutableStateMapOf<String, Int>()
     private val phoneInstallStates = mutableStateMapOf<String, InstallState>()
     private val glassesInstallStates = mutableStateMapOf<String, InstallState>()
+    private val glassesInstallStateSources = mutableMapOf<String, InstallStateSource>()
     private var pendingAction: (() -> Unit)? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     private var selfUpdateState by mutableStateOf(
@@ -114,40 +116,44 @@ class MainActivity : AppCompatActivity() {
                     value = withContext(Dispatchers.IO) { cxrL.isHostAppInstalled(selectedHostApp) }
                 }
                 BrewPhoneApp(
-                    apps = apps,
-                    busy = busy,
-                    refreshing = refreshing,
-                    selectedHostApp = selectedHostApp,
-                    hostAppInstalled = hostAppInstalled,
-                    cxrConnection = cxrConnection,
-                    statusLines = statusLines,
-                    statusExpanded = statusExpanded,
-                    downloadProgress = downloadProgress,
-                    phoneInstallStates = phoneInstallStates,
-                    glassesInstallStates = glassesInstallStates,
+                    state = StoreUiState(
+                        apps = apps,
+                        busy = busy,
+                        refreshing = refreshing,
+                        selectedHostApp = selectedHostApp,
+                        hostAppInstalled = hostAppInstalled,
+                        cxrConnection = cxrConnection,
+                        statusLines = statusLines,
+                        statusExpanded = statusExpanded,
+                        downloadProgress = downloadProgress,
+                        phoneInstallStates = phoneInstallStates,
+                        glassesInstallStates = glassesInstallStates,
+                        selfUpdateState = selfUpdateState,
+                    ),
+                    actions = StoreActions(
+                        onToggleStatus = { statusExpanded = !statusExpanded },
+                        onRefresh = { refreshStoreIndex(manual = true) },
+                        onHostAppSelected = ::selectRokidHostApp,
+                        onAuthorize = { runWithPrerequisites { cxrL.requestAuthorization() } },
+                        onInstall = { app, target ->
+                            if (target == "glasses") {
+                                runWithPrerequisites { installArtifact(app, target) }
+                            } else {
+                                installArtifact(app, target)
+                            }
+                        },
+                        onCheckGlassesInstall = ::checkGlassesInstallStateIfNeeded,
+                        onUninstall = { app, target ->
+                            if (target == "glasses") {
+                                runWithPrerequisites { uninstallArtifact(app, target) }
+                            } else {
+                                uninstallArtifact(app, target)
+                            }
+                        },
+                        onSelfUpdate = { performSelfUpdate() },
+                    ),
                     iconLoader = iconLoader,
                     mediaLoader = mediaLoader,
-                    onToggleStatus = { statusExpanded = !statusExpanded },
-                    onRefresh = { refreshStoreIndex(manual = true) },
-                    onHostAppSelected = ::selectRokidHostApp,
-                    onAuthorize = { runWithPrerequisites { cxrL.requestAuthorization() } },
-                    onInstall = { app, target ->
-                        if (target == "glasses") {
-                            runWithPrerequisites { installArtifact(app, target) }
-                        } else {
-                            installArtifact(app, target)
-                        }
-                    },
-                    onCheckGlassesInstall = ::checkGlassesInstallStateIfNeeded,
-                    onUninstall = { app, target ->
-                        if (target == "glasses") {
-                            runWithPrerequisites { uninstallArtifact(app, target) }
-                        } else {
-                            uninstallArtifact(app, target)
-                        }
-                    },
-                    selfUpdateState = selfUpdateState,
-                    onSelfUpdate = { performSelfUpdate() },
                 )
                 if (showUpdatePrompt && selfUpdateState.available) {
                     UpdateDialog(
@@ -310,11 +316,10 @@ class MainActivity : AppCompatActivity() {
     private fun checkGlassesInstallStateIfNeeded(app: BrewApp) {
         val artifact = app.artifactFor("glasses") ?: return
         val packageName = artifact.packageName?.takeIf { it.isNotBlank() } ?: return
-        if (glassesInstallStates.containsKey(packageName)) return
+        if (glassesInstallStateSources[packageName] == InstallStateSource.VERIFIED) return
 
         cachedGlassesInstallState(app, artifact)?.let { cachedState ->
-            glassesInstallStates[packageName] = cachedState
-            return
+            setGlassesInstallState(packageName, cachedState, InstallStateSource.CACHED)
         }
 
         if (busy || !cxrL.hasAuthorization()) return
@@ -327,13 +332,17 @@ class MainActivity : AppCompatActivity() {
             .toSet()
         glassesInstallStates.keys
             .filterNot(knownPackages::contains)
-            .forEach(glassesInstallStates::remove)
+            .forEach(::removeGlassesInstallState)
+        glassesInstallStateSources.keys
+            .filterNot(knownPackages::contains)
+            .forEach(glassesInstallStateSources::remove)
 
         targetApps.forEach { app ->
             val artifact = app.artifactFor("glasses") ?: return@forEach
             val packageName = artifact.packageName?.takeIf { it.isNotBlank() } ?: return@forEach
+            if (glassesInstallStateSources[packageName] == InstallStateSource.VERIFIED) return@forEach
             cachedGlassesInstallState(app, artifact)?.let { state ->
-                glassesInstallStates[packageName] = state
+                setGlassesInstallState(packageName, state, InstallStateSource.CACHED)
             }
         }
     }
@@ -352,6 +361,20 @@ class MainActivity : AppCompatActivity() {
         } else {
             InstallState.INSTALLED
         }
+    }
+
+    private fun setGlassesInstallState(
+        packageName: String,
+        state: InstallState,
+        source: InstallStateSource,
+    ) {
+        glassesInstallStates[packageName] = state
+        glassesInstallStateSources[packageName] = source
+    }
+
+    private fun removeGlassesInstallState(packageName: String) {
+        glassesInstallStates.remove(packageName)
+        glassesInstallStateSources.remove(packageName)
     }
 
     private fun refreshGlassesInstallStates(targetApps: List<BrewApp> = apps) {
@@ -374,11 +397,14 @@ class MainActivity : AppCompatActivity() {
                     if (installCache.getGlasses(packageName) == null) {
                         installCache.recordGlassesDiscovered(app, artifact)
                     }
-                    glassesInstallStates[packageName] =
-                        cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED_UNKNOWN_VERSION
+                    setGlassesInstallState(
+                        packageName,
+                        cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED_UNKNOWN_VERSION,
+                        InstallStateSource.VERIFIED,
+                    )
                 } else {
                     installCache.removeGlasses(packageName)
-                    glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                    setGlassesInstallState(packageName, InstallState.NOT_INSTALLED, InstallStateSource.VERIFIED)
                 }
                 installCheckTick += 1
             },
@@ -443,11 +469,14 @@ class MainActivity : AppCompatActivity() {
                         artifact.packageName?.takeIf { it.isNotBlank() }?.let { packageName ->
                             if (installed) {
                                 installCache.recordGlassesInstall(app, artifact)
-                                glassesInstallStates[packageName] =
-                                    cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED
+                                setGlassesInstallState(
+                                    packageName,
+                                    cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED,
+                                    InstallStateSource.VERIFIED,
+                                )
                             } else {
                                 installCache.removeGlasses(packageName)
-                                glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                                setGlassesInstallState(packageName, InstallState.NOT_INSTALLED, InstallStateSource.VERIFIED)
                             }
                             installCheckTick += 1
                         }
@@ -480,7 +509,7 @@ class MainActivity : AppCompatActivity() {
             cxrL.uninstallApp(packageName) { uninstalled ->
                 if (uninstalled) {
                     installCache.removeGlasses(packageName)
-                    glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                    setGlassesInstallState(packageName, InstallState.NOT_INSTALLED, InstallStateSource.VERIFIED)
                     installCheckTick += 1
                 }
             }
@@ -510,6 +539,7 @@ class MainActivity : AppCompatActivity() {
             .apply()
         cxrL.selectHostApp(hostApp)
         glassesInstallStates.clear()
+        glassesInstallStateSources.clear()
         installCheckTick += 1
         log("CXR-L host set to ${hostApp.displayName}. Authorize again before glasses installs.")
     }

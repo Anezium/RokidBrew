@@ -38,6 +38,20 @@ data class BrewRelease(
     val changes: List<String>,
 )
 
+data class BrewSelfUpdateState(
+    val currentVersion: String = "",
+    val currentVersionCode: Long = 0L,
+    val latestVersion: String = "",
+    val latestVersionCode: Long? = null,
+    val apkUrl: String = "",
+    val releaseUrl: String = "",
+    val notes: String = "",
+    val changes: List<String> = emptyList(),
+    val available: Boolean = false,
+    val downloading: Boolean = false,
+    val downloadPercent: Int = 0,
+)
+
 data class BrewApp(
     val id: String,
     val name: String,

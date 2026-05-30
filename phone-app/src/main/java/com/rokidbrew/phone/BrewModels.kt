@@ -88,6 +88,9 @@ data class BrewIndexRefresh(
     val brewVersion: String?,
     val brewVersionCode: Long?,
     val brewApkUrl: String?,
+    val brewReleaseUrl: String?,
+    val brewNotes: String?,
+    val brewChanges: List<String>,
 )
 
 private data class BrewIndexRaw(
@@ -96,6 +99,9 @@ private data class BrewIndexRaw(
     val brewVersion: String?,
     val brewVersionCode: Long?,
     val brewApkUrl: String?,
+    val brewReleaseUrl: String?,
+    val brewNotes: String?,
+    val brewChanges: List<String>,
 )
 
 object BrewIndex {
@@ -136,6 +142,9 @@ object BrewIndex {
                     brewVersion = parsed.brewVersion,
                     brewVersionCode = parsed.brewVersionCode,
                     brewApkUrl = parsed.brewApkUrl,
+                    brewReleaseUrl = parsed.brewReleaseUrl,
+                    brewNotes = parsed.brewNotes,
+                    brewChanges = parsed.brewChanges,
                 )
             }.onFailure { error ->
                 lastError = error
@@ -235,6 +244,9 @@ object BrewIndex {
             brewVersion = root.optString("brewVersion").takeIf { it.isNotBlank() },
             brewVersionCode = root.optLong("brewVersionCode").takeIf { it > 0L },
             brewApkUrl = root.optString("brewApkUrl").takeIf { it.isNotBlank() },
+            brewReleaseUrl = root.optString("brewReleaseUrl").takeIf { it.isNotBlank() },
+            brewNotes = root.optString("brewNotes").takeIf { it.isNotBlank() },
+            brewChanges = root.stringList("brewChanges"),
         )
     }
 

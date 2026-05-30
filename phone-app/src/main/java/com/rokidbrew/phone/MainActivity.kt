@@ -14,8 +14,6 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,10 +51,13 @@ class MainActivity : AppCompatActivity() {
     private val glassesInstallStates = mutableStateMapOf<String, InstallState>()
     private var pendingAction: (() -> Unit)? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    private var updateAvailable by mutableStateOf(false)
-    private var updateVersion by mutableStateOf("")
-    private var updateApkUrl by mutableStateOf("")
-    private var updateDownloading by mutableStateOf(false)
+    private var selfUpdateState by mutableStateOf(
+        BrewSelfUpdateState(
+            currentVersion = BuildConfig.VERSION_NAME,
+            currentVersionCode = BuildConfig.VERSION_CODE.toLong(),
+        ),
+    )
+    private var showUpdatePrompt by mutableStateOf(false)
     private var selectedHostApp by mutableStateOf(RokidHostApp.DEFAULT)
     private var cxrConnection by mutableStateOf(CxrConnectionState())
     private var phoneInstallRefreshGeneration = 0
@@ -134,14 +135,16 @@ class MainActivity : AppCompatActivity() {
                             installArtifact(app, target)
                         }
                     },
+                    selfUpdateState = selfUpdateState,
+                    onSelfUpdate = { performSelfUpdate() },
                 )
-                if (updateAvailable) {
+                if (showUpdatePrompt && selfUpdateState.available) {
                     UpdateDialog(
-                        version = updateVersion,
-                        downloading = updateDownloading,
-                        downloadPercent = downloadProgress["brew-self-update"] ?: 0,
+                        version = selfUpdateState.latestVersion.ifBlank { "latest" },
+                        downloading = selfUpdateState.downloading,
+                        downloadPercent = selfUpdateState.downloadPercent,
                         onUpdate = { performSelfUpdate() },
-                        onDismiss = { updateAvailable = false },
+                        onDismiss = { showUpdatePrompt = false },
                     )
                 }
             }
@@ -217,10 +220,22 @@ class MainActivity : AppCompatActivity() {
                 refreshPhoneInstallStates(refresh.apps)
                 installCheckTick += 1
                 val remoteCode = refresh.brewVersionCode ?: 0L
-                if (remoteCode > BuildConfig.VERSION_CODE && !refresh.brewApkUrl.isNullOrBlank()) {
-                    updateAvailable = true
-                    updateVersion = refresh.brewVersion.orEmpty()
-                    updateApkUrl = refresh.brewApkUrl
+                val updateAvailable = remoteCode > BuildConfig.VERSION_CODE && !refresh.brewApkUrl.isNullOrBlank()
+                val wasUpdateAvailable = selfUpdateState.available
+                selfUpdateState = selfUpdateState.copy(
+                    currentVersion = BuildConfig.VERSION_NAME,
+                    currentVersionCode = BuildConfig.VERSION_CODE.toLong(),
+                    latestVersion = refresh.brewVersion.orEmpty(),
+                    latestVersionCode = refresh.brewVersionCode,
+                    apkUrl = refresh.brewApkUrl.orEmpty(),
+                    releaseUrl = refresh.brewReleaseUrl.orEmpty(),
+                    notes = refresh.brewNotes.orEmpty(),
+                    changes = refresh.brewChanges,
+                    available = updateAvailable,
+                )
+                if (updateAvailable) {
+                    if (!wasUpdateAvailable) showUpdatePrompt = true
+                    log("Update available: RokidBrew ${updateVersionLabel(refresh.brewVersion)}.")
                 }
                 log("Store registry updated (${refresh.apps.size} apps).")
             }.onFailure { error ->
@@ -233,24 +248,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performSelfUpdate() {
-        if (updateDownloading) return
-        updateDownloading = true
-        val url = updateApkUrl
-        val version = updateVersion.ifBlank { "latest" }
+        if (selfUpdateState.downloading) return
+        val url = selfUpdateState.apkUrl
+        if (url.isBlank()) {
+            log("Update failed: missing RokidBrew APK URL.")
+            return
+        }
+        selfUpdateState = selfUpdateState.copy(downloading = true, downloadPercent = 0)
+        downloadProgress["brew-self-update"] = 0
+        val version = selfUpdateState.latestVersion.ifBlank { "latest" }
         lifecycleScope.launch {
             runCatching {
                 log("Downloading RokidBrew $version...")
                 val file = downloader.download(url, "RokidBrew-update.apk") { percent ->
-                    downloadProgress["brew-self-update"] = percent
+                    runOnUiThread {
+                        downloadProgress["brew-self-update"] = percent
+                        selfUpdateState = selfUpdateState.copy(downloadPercent = percent)
+                    }
                 }
+                downloadProgress["brew-self-update"] = 100
+                selfUpdateState = selfUpdateState.copy(downloading = false, downloadPercent = 100)
                 log("Downloaded ${file.length()} bytes.")
                 val ok = PhonePackageInstallHelper.requestInstall(this@MainActivity, file, ::log)
                 if (!ok) {
-                    updateDownloading = false
+                    selfUpdateState = selfUpdateState.copy(downloading = false)
                 }
+                downloadProgress.remove("brew-self-update")
             }.onFailure { error ->
                 log("Update failed: ${error.message ?: error.javaClass.simpleName}")
-                updateDownloading = false
+                downloadProgress.remove("brew-self-update")
+                selfUpdateState = selfUpdateState.copy(downloading = false)
             }
         }
     }
@@ -385,6 +412,12 @@ class MainActivity : AppCompatActivity() {
             val line = "[${timeFormat.format(Date())}] $message"
             statusLines = if (statusLines.singleOrNull() == "Ready.") listOf(line) else (statusLines + line).takeLast(60)
         }
+    }
+
+    private fun updateVersionLabel(version: String?): String {
+        val clean = version?.trim().orEmpty()
+        if (clean.isBlank()) return "latest"
+        return if (clean.startsWith("v", ignoreCase = true)) clean else "v$clean"
     }
 
     private fun runWithPrerequisites(action: () -> Unit) {

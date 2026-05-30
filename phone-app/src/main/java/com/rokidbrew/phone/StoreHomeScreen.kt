@@ -80,17 +80,22 @@ internal fun BrewPhoneApp(
     onHostAppSelected: (RokidHostApp) -> Unit,
     onAuthorize: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
+    selfUpdateState: BrewSelfUpdateState,
+    onSelfUpdate: () -> Unit,
 ) {
     var categoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
     var appListExpanded by rememberSaveable { mutableStateOf(false) }
     var showingFeaturedList by rememberSaveable { mutableStateOf(false) }
+    var updateSheetVisible by rememberSaveable { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<BrewApp?>(null) }
     val listState = rememberLazyListState()
 
-    BackHandler(enabled = selectedApp != null || showingFeaturedList) {
-        if (selectedApp != null) {
+    BackHandler(enabled = updateSheetVisible || selectedApp != null || showingFeaturedList) {
+        if (updateSheetVisible) {
+            updateSheetVisible = false
+        } else if (selectedApp != null) {
             selectedApp = null
         } else {
             showingFeaturedList = false
@@ -181,6 +186,8 @@ internal fun BrewPhoneApp(
                                 appListExpanded = false
                             }
                         },
+                        updateAvailable = selfUpdateState.available,
+                        onUpdateOpen = { updateSheetVisible = true },
                         onRefresh = onRefresh,
                         onReset = {
                             categoryFilter = null
@@ -287,6 +294,21 @@ internal fun BrewPhoneApp(
                 onToggleStatus = onToggleStatus,
                 onDismiss = { selectedApp = null },
                 onInstall = onInstall,
+            )
+        }
+
+        AnimatedVisibility(
+            visible = updateSheetVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            UpdateSheet(
+                state = selfUpdateState,
+                statusLines = statusLines,
+                statusExpanded = statusExpanded,
+                onToggleStatus = onToggleStatus,
+                onDismiss = { updateSheetVisible = false },
+                onUpdate = onSelfUpdate,
             )
         }
     }

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
@@ -57,7 +58,9 @@ import androidx.compose.ui.unit.sp
 internal fun Header(
     refreshing: Boolean,
     searchActive: Boolean,
+    updateAvailable: Boolean,
     onSearchToggle: () -> Unit,
+    onUpdateOpen: () -> Unit,
     onRefresh: () -> Unit,
     onReset: () -> Unit,
 ) {
@@ -90,6 +93,32 @@ internal fun Header(
                 tint = if (searchActive) BrewGreen else BrewTextBright,
                 modifier = Modifier.size(24.dp),
             )
+        }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onUpdateOpen),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.SystemUpdateAlt,
+                null,
+                tint = if (updateAvailable) BrewAmber else BrewTextBright,
+                modifier = Modifier.size(24.dp),
+            )
+            if (updateAvailable) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 5.dp, end = 5.dp)
+                        .size(10.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(BrewRed)
+                        .border(1.dp, BrewAmber, RoundedCornerShape(5.dp)),
+                )
+            }
         }
         Spacer(Modifier.width(6.dp))
         Box(

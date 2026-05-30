@@ -19,6 +19,7 @@ Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, insta
 <p align="center">
   <img src="RokidBrew_screenshot1.jpg" width="280" alt="RokidBrew store screen" />
   <img src="RokidBrew_screenshot2.jpg" width="280" alt="RokidBrew app detail" />
+  <img src="RokidBrew_screenshot3.jpg" width="280" alt="RokidBrew self-update screen" />
 </p>
 
 ## Download

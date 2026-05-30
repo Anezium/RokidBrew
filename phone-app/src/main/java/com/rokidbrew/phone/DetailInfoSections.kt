@@ -75,51 +75,141 @@ internal fun DetailSectionTitle(title: String, modifier: Modifier = Modifier) {
 
 @Composable
 internal fun AboutBody(text: String, modifier: Modifier = Modifier) {
-    val blocks = remember(text) { readableDescriptionBlocks(text) }
+    DetailMarkdownBody(text, modifier)
+}
+
+@Composable
+internal fun DetailMarkdownBody(
+    text: String,
+    modifier: Modifier = Modifier,
+    maxBlocks: Int = Int.MAX_VALUE,
+) {
+    val blocks = remember(text, maxBlocks) { markdownDescriptionBlocks(text).take(maxBlocks) }
     Column(modifier = modifier.fillMaxWidth()) {
         blocks.forEachIndexed { index, block ->
-            if (block.startsWith("- ") || block.startsWith("* ")) {
-                DetailBulletLine(block.drop(2), Modifier.padding(top = if (index == 0) 0.dp else 7.dp))
-            } else {
-                Text(
-                    block,
+            when (block.kind) {
+                DetailBlockKind.Heading -> Text(
+                    block.text,
+                    color = BrewTextBright,
+                    fontSize = 14.sp,
+                    lineHeight = 19.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 15.dp),
+                )
+                DetailBlockKind.Bullet -> DetailBulletLine(
+                    block.text,
+                    Modifier.padding(top = if (index == 0) 0.dp else 7.dp),
+                )
+                DetailBlockKind.Paragraph -> Text(
+                    block.text,
                     color = BrewText,
                     fontSize = 13.sp,
                     lineHeight = 20.sp,
-                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 12.dp),
+                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 11.dp),
                 )
             }
         }
     }
 }
 
-internal fun readableDescriptionBlocks(text: String): List<String> {
+private enum class DetailBlockKind {
+    Heading,
+    Paragraph,
+    Bullet,
+}
+
+private data class DetailTextBlock(
+    val kind: DetailBlockKind,
+    val text: String,
+)
+
+private fun markdownDescriptionBlocks(text: String): List<DetailTextBlock> {
     val cleaned = text
         .replace("\r\n", "\n")
         .replace('\r', '\n')
-        .lines()
-        .map { it.trim() }
-        .joinToString("\n")
         .trim()
     if (cleaned.isBlank()) return emptyList()
 
-    val naturalBlocks = cleaned
-        .split(Regex("\\n\\s*\\n"))
-        .map { it.lines().filter(String::isNotBlank).joinToString(" ").trim() }
-        .filter(String::isNotBlank)
-    if (naturalBlocks.size > 1) return naturalBlocks
+    val blocks = mutableListOf<DetailTextBlock>()
+    val paragraph = mutableListOf<String>()
 
-    val bulletLines = cleaned.lines().filter { it.startsWith("- ") || it.startsWith("* ") }
-    if (bulletLines.isNotEmpty()) return cleaned.lines().filter(String::isNotBlank)
+    fun flushParagraph() {
+        val joined = paragraph.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        if (joined.isNotBlank()) {
+            blocks += DetailTextBlock(DetailBlockKind.Paragraph, cleanInlineMarkdown(joined))
+        }
+        paragraph.clear()
+    }
 
-    val sentences = cleaned
-        .replace('\n', ' ')
-        .split(Regex("(?<=[.!?])\\s+"))
-        .map(String::trim)
-        .filter(String::isNotBlank)
-    if (sentences.size < 3) return listOf(cleaned.replace('\n', ' '))
+    cleaned.lines().forEach { rawLine ->
+        val line = rawLine.trim()
+        if (line.isBlank()) {
+            flushParagraph()
+            return@forEach
+        }
 
-    return sentences.chunked(2).map { it.joinToString(" ") }
+        val heading = Regex("^#{1,6}\\s+(.+)$").matchEntire(line)
+        if (heading != null) {
+            flushParagraph()
+            blocks += DetailTextBlock(DetailBlockKind.Heading, cleanInlineMarkdown(heading.groupValues[1]))
+            return@forEach
+        }
+
+        val structuralLine = cleanInlineMarkdown(line)
+        val bracketHeading = Regex("^\\[([^]]+)]$").matchEntire(structuralLine)
+        if (bracketHeading != null) {
+            flushParagraph()
+            blocks += DetailTextBlock(DetailBlockKind.Heading, bracketHeading.groupValues[1].trim())
+            return@forEach
+        }
+
+        val emphasizedHeading = isEmphasizedLine(line)
+        val numberedHeading = Regex("^\\d+[.)]\\s+(.+)$").matchEntire(structuralLine)
+        if (emphasizedHeading && numberedHeading != null) {
+            flushParagraph()
+            blocks += DetailTextBlock(DetailBlockKind.Heading, numberedHeading.groupValues[1].trim())
+            return@forEach
+        }
+
+        val bullet = Regex("^[-*+]\\s+(.+)$").matchEntire(line)
+            ?: Regex("^\\d+[.)]\\s+(.+)$").matchEntire(line)
+        if (bullet != null) {
+            flushParagraph()
+            blocks += DetailTextBlock(DetailBlockKind.Bullet, cleanInlineMarkdown(bullet.groupValues[1]))
+            return@forEach
+        }
+
+        if (Regex("^-{3,}$").matches(line)) {
+            flushParagraph()
+            return@forEach
+        }
+
+        paragraph += line
+    }
+    flushParagraph()
+
+    return blocks.ifEmpty {
+        listOf(DetailTextBlock(DetailBlockKind.Paragraph, cleanInlineMarkdown(cleaned.replace('\n', ' '))))
+    }
+}
+
+private fun isEmphasizedLine(value: String): Boolean {
+    val line = value.trim()
+    return (line.startsWith("**") && line.endsWith("**") && line.length > 4) ||
+        (line.startsWith("__") && line.endsWith("__") && line.length > 4)
+}
+
+private fun cleanInlineMarkdown(value: String): String {
+    return value
+        .replace(Regex("!\\[[^]]*]\\([^)]+\\)"), "")
+        .replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
+        .replace(Regex("`([^`]+)`"), "$1")
+        .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+        .replace(Regex("__([^_]+)__"), "$1")
+        .replace(Regex("\\*([^*]+)\\*"), "$1")
+        .replace(Regex("_([^_]+)_"), "$1")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }
 
 @Composable
@@ -176,15 +266,7 @@ internal fun WhatsNewSection(app: BrewApp, modifier: Modifier = Modifier) {
             modifier = Modifier.padding(top = 12.dp),
         )
         release.notes?.takeIf { it.isNotBlank() }?.let { notes ->
-            Text(
-                notes,
-                color = BrewText,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 8.dp),
-            )
+            DetailMarkdownBody(notes, Modifier.padding(top = 8.dp), maxBlocks = 5)
         }
         release.changes.take(4).forEach { change ->
             DetailBulletLine(change, Modifier.padding(top = 5.dp))

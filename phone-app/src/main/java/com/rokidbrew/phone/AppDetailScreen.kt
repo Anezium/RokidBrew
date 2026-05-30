@@ -48,7 +48,7 @@ internal fun DetailSheet(
     progress: Map<String, Int>,
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
-    installCheckTick: Int,
+    phoneInstallStates: Map<String, MainActivity.InstallState>,
     glassesInstallStates: Map<String, MainActivity.InstallState>,
     statusLines: List<String>,
     statusExpanded: Boolean,
@@ -58,7 +58,7 @@ internal fun DetailSheet(
 ) {
     if (app == null) return
     var expandedScreenshotIndex by remember(app.id) { mutableStateOf<Int?>(null) }
-    val phoneInstallState = if (app.hasTarget("phone")) rememberInstallState(app, "phone", installCheckTick) else MainActivity.InstallState.UNKNOWN
+    val phoneInstallState = phoneInstallStateFor(app, phoneInstallStates)
     val glassesInstallState = rememberGlassesInstallState(app, glassesInstallStates)
     val detailScrollState = rememberScrollState()
     Box(

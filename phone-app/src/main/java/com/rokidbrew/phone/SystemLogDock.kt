@@ -107,7 +107,7 @@ internal fun SystemLogPanel(
                 lineHeight = 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 32.dp, end = 18.dp, bottom = 10.dp),
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp),
                 fontFamily = BrewFont,
             )
         }

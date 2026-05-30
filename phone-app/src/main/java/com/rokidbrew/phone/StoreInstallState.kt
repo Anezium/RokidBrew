@@ -133,6 +133,14 @@ internal fun rememberGlassesInstallState(
     return packageName?.let { glassesInstallStates[it] } ?: MainActivity.InstallState.UNKNOWN
 }
 
+internal fun phoneInstallStateFor(
+    app: BrewApp,
+    phoneInstallStates: Map<String, MainActivity.InstallState>,
+): MainActivity.InstallState {
+    val packageName = app.artifactFor("phone")?.packageName?.takeIf { it.isNotBlank() }
+    return packageName?.let { phoneInstallStates[it] } ?: MainActivity.InstallState.UNKNOWN
+}
+
 @Composable
 internal fun rememberInstallState(app: BrewApp, target: String, installCheckTick: Int): MainActivity.InstallState {
     val context = LocalContext.current

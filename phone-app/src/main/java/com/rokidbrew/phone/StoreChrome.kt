@@ -5,9 +5,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,15 +41,12 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextStyle
@@ -59,22 +56,45 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun Header(
     refreshing: Boolean,
+    searchActive: Boolean,
+    onSearchToggle: () -> Unit,
     onRefresh: () -> Unit,
     onReset: () -> Unit,
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onReset),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RokidBrewLogo(Modifier.size(40.dp))
-        Spacer(Modifier.width(12.dp))
-        BrandTitle(fontSize = 24)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(onClick = onReset)
+                .padding(end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RokidBrewLogo(Modifier.size(40.dp))
+            Spacer(Modifier.width(12.dp))
+            BrandTitle(fontSize = 24)
+        }
         Spacer(Modifier.weight(1f))
         Box(
             modifier = Modifier
-                .size(40.dp)
+                .size(38.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onSearchToggle),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Search,
+                null,
+                tint = if (searchActive) BrewGreen else BrewTextBright,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .size(38.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .clickable(enabled = !refreshing, onClick = onRefresh),
             contentAlignment = Alignment.Center,
@@ -91,54 +111,19 @@ internal fun Header(
                 Icons.Outlined.Refresh,
                 null,
                 tint = if (refreshing) BrewGreen else BrewTextBright,
-                modifier = Modifier.size(27.dp).graphicsLayer { rotationZ = rotation },
+                modifier = Modifier.size(25.dp).graphicsLayer { rotationZ = rotation },
             )
         }
     }
 }
 @Composable
 internal fun RokidBrewLogo(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val stroke = size.minDimension * 0.075f
-        val bag = Path().apply {
-            moveTo(size.width * 0.2f, size.height * 0.38f)
-            quadraticTo(size.width * 0.2f, size.height * 0.28f, size.width * 0.3f, size.height * 0.28f)
-            lineTo(size.width * 0.7f, size.height * 0.28f)
-            quadraticTo(size.width * 0.8f, size.height * 0.28f, size.width * 0.8f, size.height * 0.38f)
-            lineTo(size.width * 0.8f, size.height * 0.8f)
-            quadraticTo(size.width * 0.8f, size.height * 0.88f, size.width * 0.72f, size.height * 0.88f)
-            lineTo(size.width * 0.28f, size.height * 0.88f)
-            quadraticTo(size.width * 0.2f, size.height * 0.88f, size.width * 0.2f, size.height * 0.8f)
-            close()
-        }
-        drawPath(
-            path = bag,
-            color = BrewGreen,
-            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
-        )
-        drawArc(
-            color = BrewGreen,
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = Offset(size.width * 0.33f, size.height * 0.04f),
-            size = androidx.compose.ui.geometry.Size(size.width * 0.34f, size.height * 0.34f),
-            style = Stroke(width = stroke, cap = StrokeCap.Round),
-        )
-        val prompt = Path().apply {
-            moveTo(size.width * 0.34f, size.height * 0.53f)
-            lineTo(size.width * 0.43f, size.height * 0.61f)
-            lineTo(size.width * 0.34f, size.height * 0.69f)
-        }
-        drawPath(prompt, BrewGreen, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawLine(
-            BrewGreen,
-            start = Offset(size.width * 0.52f, size.height * 0.7f),
-            end = Offset(size.width * 0.64f, size.height * 0.7f),
-            strokeWidth = stroke,
-            cap = StrokeCap.Round,
-        )
-    }
+    Image(
+        painter = painterResource(id = R.mipmap.ic_launcher),
+        contentDescription = "RokidBrew",
+        contentScale = ContentScale.Crop,
+        modifier = modifier.clip(RoundedCornerShape(9.dp)),
+    )
 }
 @Composable
 internal fun BrandTitle(fontSize: Int, modifier: Modifier = Modifier) {

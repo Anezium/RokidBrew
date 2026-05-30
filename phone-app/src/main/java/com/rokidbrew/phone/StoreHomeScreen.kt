@@ -6,7 +6,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
@@ -17,26 +16,30 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material.icons.outlined.Navigation
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 
+private const val COLLAPSED_APP_COUNT = 5
+
 @Composable
 internal fun BrewPhoneApp(
     apps: List<BrewApp>,
@@ -63,10 +68,10 @@ internal fun BrewPhoneApp(
     selectedHostApp: RokidHostApp,
     hostAppInstalled: Boolean,
     cxrConnection: CxrConnectionState,
-    installCheckTick: Int,
     statusLines: List<String>,
     statusExpanded: Boolean,
     downloadProgress: Map<String, Int>,
+    phoneInstallStates: Map<String, MainActivity.InstallState>,
     glassesInstallStates: Map<String, MainActivity.InstallState>,
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
@@ -78,11 +83,18 @@ internal fun BrewPhoneApp(
 ) {
     var categoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
+    var searchVisible by rememberSaveable { mutableStateOf(false) }
+    var appListExpanded by rememberSaveable { mutableStateOf(false) }
+    var showingFeaturedList by rememberSaveable { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<BrewApp?>(null) }
-    val scrollState = rememberScrollState()
+    val listState = rememberLazyListState()
 
-    BackHandler(enabled = selectedApp != null) {
-        selectedApp = null
+    BackHandler(enabled = selectedApp != null || showingFeaturedList) {
+        if (selectedApp != null) {
+            selectedApp = null
+        } else {
+            showingFeaturedList = false
+        }
     }
 
     val visibleApps = remember(apps, categoryFilter, query) {
@@ -106,7 +118,11 @@ internal fun BrewPhoneApp(
         }
     }
     val featuredApps = remember(apps) {
-        apps.curatedHeroApps().ifEmpty { apps.take(6) }.take(8)
+        apps.curatedHeroApps().ifEmpty { apps.take(6) }
+    }
+
+    LaunchedEffect(showingFeaturedList) {
+        listState.scrollToItem(0)
     }
 
     Box(
@@ -121,65 +137,128 @@ internal fun BrewPhoneApp(
                 ),
             ),
     ) {
-        Column(
+        LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 132.dp),
+                .padding(horizontal = 18.dp),
+            contentPadding = PaddingValues(top = 14.dp, bottom = 132.dp),
         ) {
-            Header(
-                refreshing = refreshing,
-                onRefresh = onRefresh,
-                onReset = {
-                    categoryFilter = null
-                    query = ""
-                },
-            )
-            SearchBar(
-                query = query,
-                onQueryChange = {
-                    query = it
-                    categoryFilter = null
-                },
-            )
-            ConnectionPanel(
-                selectedHostApp = selectedHostApp,
-                hostAppInstalled = hostAppInstalled,
-                cxrConnection = cxrConnection,
-                busy = busy,
-                onHostAppSelected = onHostAppSelected,
-                onAuthorize = onAuthorize,
-            )
-            if (featuredApps.isNotEmpty()) {
-                FeaturedShelf(
+            if (showingFeaturedList) {
+                item(key = "featured-page-header") {
+                    FeaturedListTopBar(
+                        count = featuredApps.size,
+                        onBack = { showingFeaturedList = false },
+                    )
+                }
+                appListItems(
                     apps = featuredApps,
+                    expanded = true,
+                    showToggle = false,
                     iconLoader = iconLoader,
                     mediaLoader = mediaLoader,
+                    busy = busy,
+                    progress = downloadProgress,
+                    phoneInstallStates = phoneInstallStates,
+                    glassesInstallStates = glassesInstallStates,
+                    onExpandedChange = {},
                     onOpen = { selectedApp = it },
-                    onViewAll = {
-                        categoryFilter = null
-                        query = ""
-                    },
+                    onInstall = onInstall,
+                    topPadding = 14,
+                )
+            } else {
+                item(key = "header") {
+                    Header(
+                        refreshing = refreshing,
+                        searchActive = searchVisible || query.isNotBlank(),
+                        onSearchToggle = {
+                            val nextVisible = !searchVisible
+                            searchVisible = nextVisible
+                            if (!nextVisible) {
+                                query = ""
+                                appListExpanded = false
+                            }
+                        },
+                        onRefresh = onRefresh,
+                        onReset = {
+                            categoryFilter = null
+                            query = ""
+                            searchVisible = false
+                            appListExpanded = false
+                        },
+                    )
+                }
+                item(key = "search") {
+                    AnimatedVisibility(
+                        visible = searchVisible || query.isNotBlank(),
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                    ) {
+                        SearchBar(
+                            query = query,
+                            onQueryChange = {
+                                query = it
+                                categoryFilter = null
+                                appListExpanded = false
+                            },
+                        )
+                    }
+                }
+                item(key = "connection") {
+                    ConnectionPanel(
+                        selectedHostApp = selectedHostApp,
+                        hostAppInstalled = hostAppInstalled,
+                        cxrConnection = cxrConnection,
+                        busy = busy,
+                        onHostAppSelected = onHostAppSelected,
+                        onAuthorize = onAuthorize,
+                    )
+                }
+                if (featuredApps.isNotEmpty()) {
+                    item(key = "featured") {
+                        FeaturedShelf(
+                            apps = featuredApps.take(8),
+                            iconLoader = iconLoader,
+                            mediaLoader = mediaLoader,
+                            onOpen = { selectedApp = it },
+                            onViewAll = {
+                                showingFeaturedList = true
+                                categoryFilter = null
+                                query = ""
+                                searchVisible = false
+                                appListExpanded = false
+                            },
+                        )
+                    }
+                }
+                item(key = "categories") {
+                    CategoryStrip(
+                        categories = categories,
+                        selected = categoryFilter,
+                        onSelect = {
+                            categoryFilter = it
+                            appListExpanded = false
+                        },
+                    )
+                }
+                appListItems(
+                    apps = visibleApps,
+                    expanded = appListExpanded,
+                    showToggle = true,
+                    iconLoader = iconLoader,
+                    mediaLoader = mediaLoader,
+                    busy = busy,
+                    progress = downloadProgress,
+                    phoneInstallStates = phoneInstallStates,
+                    glassesInstallStates = glassesInstallStates,
+                    onExpandedChange = { appListExpanded = it },
+                    onOpen = { selectedApp = it },
+                    onInstall = onInstall,
+                    topPadding = 14,
                 )
             }
-            CategoryStrip(
-                categories = categories,
-                selected = categoryFilter,
-                onSelect = { categoryFilter = it },
-            )
-            AppShelf(
-                apps = visibleApps,
-                iconLoader = iconLoader,
-                mediaLoader = mediaLoader,
-                busy = busy,
-                progress = downloadProgress,
-                installCheckTick = installCheckTick,
-                glassesInstallStates = glassesInstallStates,
-                onOpen = { selectedApp = it },
-                onInstall = onInstall,
-            )
         }
 
         StatusDock(
@@ -201,7 +280,7 @@ internal fun BrewPhoneApp(
                 progress = downloadProgress,
                 iconLoader = iconLoader,
                 mediaLoader = mediaLoader,
-                installCheckTick = installCheckTick,
+                phoneInstallStates = phoneInstallStates,
                 glassesInstallStates = glassesInstallStates,
                 statusLines = statusLines,
                 statusExpanded = statusExpanded,
@@ -212,6 +291,49 @@ internal fun BrewPhoneApp(
         }
     }
 }
+
+@Composable
+internal fun FeaturedListTopBar(count: Int, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.ArrowBack,
+                null,
+                tint = BrewTextBright,
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onBack)
+                    .padding(3.dp),
+            )
+            Spacer(Modifier.width(14.dp))
+            RokidBrewLogo(Modifier.size(34.dp))
+            Spacer(Modifier.width(9.dp))
+            BrandTitle(fontSize = 21)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "$count apps",
+                color = BrewMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+        Text(
+            "Featured",
+            color = BrewTextBright,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 16.dp),
+        )
+    }
+}
+
 @Composable
 internal fun CategoryStrip(categories: List<String>, selected: String?, onSelect: (String?) -> Unit) {
     if (categories.isEmpty()) return
@@ -259,14 +381,16 @@ internal fun FeaturedShelf(
         onAction = onViewAll,
         modifier = Modifier.padding(top = 22.dp),
     )
-    Row(
+    LazyRow(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 10.dp)
-            .horizontalScroll(rememberScrollState()),
+            .padding(top = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        apps.forEach { app ->
+        itemsIndexed(
+            items = apps,
+            key = { _, app -> "featured-card:${app.id}" },
+        ) { _, app ->
             FeaturedAppCard(
                 app = app,
                 iconLoader = iconLoader,
@@ -328,81 +452,140 @@ internal fun FeaturedAppCard(
         )
     }
 }
-@Composable
-internal fun AppShelf(
+private fun LazyListScope.appListItems(
     apps: List<BrewApp>,
+    expanded: Boolean,
+    showToggle: Boolean,
     iconLoader: IconLoader,
     mediaLoader: MediaLoader,
     busy: Boolean,
     progress: Map<String, Int>,
-    installCheckTick: Int,
+    phoneInstallStates: Map<String, MainActivity.InstallState>,
     glassesInstallStates: Map<String, MainActivity.InstallState>,
+    onExpandedChange: (Boolean) -> Unit,
     onOpen: (BrewApp) -> Unit,
     onInstall: (BrewApp, String) -> Unit,
+    topPadding: Int,
 ) {
     if (apps.isEmpty()) {
-        EmptyState(modifier = Modifier.padding(top = 20.dp))
+        item(key = "app-list-empty") {
+            EmptyState(modifier = Modifier.padding(top = topPadding.dp))
+        }
         return
     }
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val visibleApps = if (expanded) apps else apps.take(5)
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 14.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = BrewPanel.copy(alpha = 0.80f)),
-        border = BorderStroke(1.dp, BrewBorderHi.copy(alpha = 0.38f)),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
-            visibleApps.forEachIndexed { index, app ->
+    val canExpand = showToggle && apps.size > COLLAPSED_APP_COUNT
+    val visibleApps = if (canExpand && !expanded) apps.take(COLLAPSED_APP_COUNT) else apps
+    itemsIndexed(
+        items = visibleApps,
+        key = { _, app -> "app-row:${app.id}" },
+    ) { index, app ->
+        AppListRowShell(
+            index = index,
+            itemCount = visibleApps.size,
+            hasFooter = canExpand,
+            topPadding = topPadding,
+        ) {
                 StoreAppRow(
                     app = app,
                     iconLoader = iconLoader,
                     mediaLoader = mediaLoader,
                     busy = busy,
                     progress = appProgress(app, progress),
-                    installCheckTick = installCheckTick,
+                    phoneInstallStates = phoneInstallStates,
                     glassesInstallStates = glassesInstallStates,
                     onOpen = { onOpen(app) },
                     onInstall = onInstall,
                 )
-                if (index != visibleApps.lastIndex) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(BrewBorderHi.copy(alpha = 0.22f)),
-                    )
-                }
-            }
-            if (apps.size > 5) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(40.dp)
-                        .clickable { expanded = !expanded },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        if (expanded) "Show less" else "Show more",
-                        color = BrewGreen,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Icon(
-                        if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
-                        null,
-                        tint = BrewGreen,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
+        }
+    }
+    if (canExpand) {
+        item(key = "app-list-toggle") {
+            AppListToggleFooter(
+                expanded = expanded,
+                onClick = { onExpandedChange(!expanded) },
+            )
         }
     }
 }
+
+@Composable
+private fun AppListRowShell(
+    index: Int,
+    itemCount: Int,
+    hasFooter: Boolean,
+    topPadding: Int,
+    content: @Composable () -> Unit,
+) {
+    val shape = appListRowShape(index, itemCount, hasFooter)
+    val roundedShape = index == 0 || (index == itemCount - 1 && !hasFooter)
+    val surfaceModifier = if (roundedShape) {
+        Modifier
+            .clip(shape)
+            .background(BrewPanel.copy(alpha = 0.80f))
+            .border(1.dp, BrewBorderHi.copy(alpha = 0.38f), shape)
+    } else {
+        Modifier.background(BrewPanel.copy(alpha = 0.80f))
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = if (index == 0) topPadding.dp else 0.dp)
+            .then(surfaceModifier)
+            .padding(horizontal = 10.dp),
+    ) {
+        content()
+        if (index != itemCount - 1 || hasFooter) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(BrewBorderHi.copy(alpha = 0.22f)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppListToggleFooter(expanded: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .clip(shape)
+            .background(BrewPanel.copy(alpha = 0.80f))
+            .border(1.dp, BrewBorderHi.copy(alpha = 0.38f), shape)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            if (expanded) "Show less" else "Show more",
+            color = BrewGreen,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+            null,
+            tint = BrewGreen,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+private fun appListRowShape(index: Int, itemCount: Int, hasFooter: Boolean): RoundedCornerShape {
+    val top = if (index == 0) 14.dp else 0.dp
+    val bottom = if (index == itemCount - 1 && !hasFooter) 14.dp else 0.dp
+    return RoundedCornerShape(
+        topStart = top,
+        topEnd = top,
+        bottomEnd = bottom,
+        bottomStart = bottom,
+    )
+}
+
 @Composable
 internal fun StoreAppRow(
     app: BrewApp,
@@ -410,13 +593,13 @@ internal fun StoreAppRow(
     mediaLoader: MediaLoader,
     busy: Boolean,
     progress: Int?,
-    installCheckTick: Int,
+    phoneInstallStates: Map<String, MainActivity.InstallState>,
     glassesInstallStates: Map<String, MainActivity.InstallState>,
     onOpen: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
 ) {
     val target = primaryInstallTarget(app)
-    val phoneInstallState = if (app.hasTarget("phone")) rememberInstallState(app, "phone", installCheckTick) else MainActivity.InstallState.UNKNOWN
+    val phoneInstallState = phoneInstallStateFor(app, phoneInstallStates)
     val glassesInstallState = rememberGlassesInstallState(app, glassesInstallStates)
     val targetState = when (target) {
         "phone" -> phoneInstallState

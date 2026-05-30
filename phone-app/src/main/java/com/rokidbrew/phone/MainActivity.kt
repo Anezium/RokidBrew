@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private var statusExpanded by mutableStateOf(false)
     private var statusLines by mutableStateOf(listOf("Ready."))
     private val downloadProgress = mutableStateMapOf<String, Int>()
+    private val phoneInstallStates = mutableStateMapOf<String, InstallState>()
     private val glassesInstallStates = mutableStateMapOf<String, InstallState>()
     private var pendingAction: (() -> Unit)? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
@@ -57,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var updateDownloading by mutableStateOf(false)
     private var selectedHostApp by mutableStateOf(RokidHostApp.DEFAULT)
     private var cxrConnection by mutableStateOf(CxrConnectionState())
+    private var phoneInstallRefreshGeneration = 0
 
     private val permissions: Array<String>
         get() = buildList {
@@ -79,11 +82,13 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             intent.getStringExtra(PhoneInstallResultReceiver.EXTRA_MESSAGE)?.let(::log)
             installCheckTick += 1
+            refreshPhoneInstallStates()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        preferHighRefreshRate()
 
         downloader = ApkDownloader(this)
         iconLoader = IconLoader(this)
@@ -97,6 +102,7 @@ class MainActivity : AppCompatActivity() {
             initialHostApp = selectedHostApp,
         )
         apps = BrewIndex.loadInitial(this)
+        refreshPhoneInstallStates(apps)
 
         setContent {
             RokidBrewTheme {
@@ -110,10 +116,10 @@ class MainActivity : AppCompatActivity() {
                     selectedHostApp = selectedHostApp,
                     hostAppInstalled = hostAppInstalled,
                     cxrConnection = cxrConnection,
-                    installCheckTick = installCheckTick,
                     statusLines = statusLines,
                     statusExpanded = statusExpanded,
                     downloadProgress = downloadProgress,
+                    phoneInstallStates = phoneInstallStates,
                     glassesInstallStates = glassesInstallStates,
                     iconLoader = iconLoader,
                     mediaLoader = mediaLoader,
@@ -140,7 +146,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        warmAssets(apps)
         refreshStoreIndex(manual = false)
         log("Ready. Authorize ${selectedHostApp.displayName} before installing glasses APKs.")
     }
@@ -163,7 +168,40 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        preferHighRefreshRate()
         installCheckTick += 1
+        refreshPhoneInstallStates()
+    }
+
+    private fun preferHighRefreshRate() {
+        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay
+        } ?: return
+        val currentMode = display.mode
+        val matchingModes = display.supportedModes
+            .filter { mode ->
+                mode.physicalWidth == currentMode.physicalWidth &&
+                    mode.physicalHeight == currentMode.physicalHeight
+            }
+        val fastestMode = matchingModes.maxByOrNull { it.refreshRate } ?: return
+        val preferredMode = if (fastestMode.refreshRate > currentMode.refreshRate) fastestMode else currentMode
+
+        val attributes = window.attributes
+        if (
+            attributes.preferredDisplayModeId != preferredMode.modeId ||
+            attributes.preferredRefreshRate != fastestMode.refreshRate
+        ) {
+            attributes.preferredDisplayModeId = preferredMode.modeId
+            attributes.preferredRefreshRate = fastestMode.refreshRate
+            attributes.setFrameRatePowerSavingsBalanced(false)
+            window.attributes = attributes
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            window.decorView.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_HIGH)
+        }
     }
 
     private fun refreshStoreIndex(manual: Boolean) {
@@ -176,7 +214,7 @@ class MainActivity : AppCompatActivity() {
                 BrewIndex.refresh(this@MainActivity)
             }.onSuccess { refresh ->
                 apps = refresh.apps
-                warmAssets(refresh.apps)
+                refreshPhoneInstallStates(refresh.apps)
                 installCheckTick += 1
                 val remoteCode = refresh.brewVersionCode ?: 0L
                 if (remoteCode > BuildConfig.VERSION_CODE && !refresh.brewApkUrl.isNullOrBlank()) {
@@ -217,18 +255,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun warmAssets(targetApps: List<BrewApp>) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            targetApps.forEach { app ->
-                iconLoader.load(app.id, app.iconUrl)
-                for (index in 0 until app.screenshotCount) {
-                    val screenshot = app.screenshotAt(index)
-                    mediaLoader.load(screenshot.assetName, screenshot.url)
-                }
-            }
-        }
-    }
-
     override fun onDestroy() {
         cxrL.cleanup()
         super.onDestroy()
@@ -258,6 +284,34 @@ class MainActivity : AppCompatActivity() {
                 log("Glasses install states refreshed.")
             },
         )
+    }
+
+    private fun refreshPhoneInstallStates(targetApps: List<BrewApp> = apps) {
+        val artifacts = targetApps
+            .mapNotNull { it.artifactFor("phone") }
+            .filter { !it.packageName.isNullOrBlank() }
+            .distinctBy { it.packageName }
+        val generation = ++phoneInstallRefreshGeneration
+        if (artifacts.isEmpty()) {
+            phoneInstallStates.clear()
+            return
+        }
+
+        lifecycleScope.launch {
+            val states = withContext(Dispatchers.IO) {
+                artifacts.associate { artifact ->
+                    artifact.packageName.orEmpty() to installStateFor(artifact)
+                }
+            }
+            if (generation != phoneInstallRefreshGeneration) return@launch
+            val stalePackages = phoneInstallStates.keys.filterNot(states::containsKey)
+            stalePackages.forEach(phoneInstallStates::remove)
+            states.forEach { (packageName, state) ->
+                if (phoneInstallStates[packageName] != state) {
+                    phoneInstallStates[packageName] = state
+                }
+            }
+        }
     }
 
     private fun installArtifact(app: BrewApp, target: String) {

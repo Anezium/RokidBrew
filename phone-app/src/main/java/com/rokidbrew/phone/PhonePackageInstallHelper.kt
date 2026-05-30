@@ -27,6 +27,17 @@ object PhonePackageInstallHelper {
         return startInstaller(activity, apkFile, onStatus)
     }
 
+    fun requestUninstall(activity: Activity, packageName: String, appName: String, onStatus: (String) -> Unit): Boolean {
+        return runCatching {
+            activity.startActivity(
+                Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")),
+            )
+            onStatus("Phone uninstall opened for $appName.")
+        }.onFailure { error ->
+            onStatus("Phone uninstall failed: ${error.message ?: error.javaClass.simpleName}")
+        }.isSuccess
+    }
+
     private fun startInstaller(context: Context, apkFile: File, onStatus: (String) -> Unit): Boolean {
         return runCatching {
             val installer = context.packageManager.packageInstaller

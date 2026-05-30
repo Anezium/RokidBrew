@@ -105,7 +105,6 @@ private data class BrewIndexRaw(
 )
 
 object BrewIndex {
-    private const val CACHE_FILE = "apps.v2.json"
     private val remoteUrls = listOf(
         BuildConfig.ROKIDBREW_REGISTRY_URL,
     )
@@ -122,7 +121,7 @@ object BrewIndex {
     }
 
     fun loadCached(context: Context): List<BrewApp> {
-        val file = File(context.filesDir, CACHE_FILE)
+        val file = cacheFile(context)
         if (!file.exists()) return emptyList()
         return runCatching { parse(file.readText()).apps }.getOrDefault(emptyList())
     }
@@ -135,7 +134,7 @@ object BrewIndex {
                 val parsed = parse(raw)
                 val apps = mergeBundledMedia(parsed.apps, loadBundled(context))
                 require(apps.isNotEmpty()) { "Remote registry is empty" }
-                File(context.filesDir, CACHE_FILE).writeText(raw)
+                cacheFile(context).writeText(raw)
                 return@withContext BrewIndexRefresh(
                     apps = apps,
                     sourceUrl = url,
@@ -151,6 +150,11 @@ object BrewIndex {
             }
         }
         throw lastError ?: IllegalStateException("No registry endpoint available")
+    }
+
+    private fun cacheFile(context: Context): File {
+        val suffix = Integer.toHexString(BuildConfig.ROKIDBREW_REGISTRY_URL.hashCode())
+        return File(context.filesDir, "apps.$suffix.json")
     }
 
     private fun fetch(url: String): String {

@@ -43,6 +43,8 @@ class CxrLHiRokidSession(
     private var cxrLink: CXRLink? = null
     private var pendingUpload: File? = null
     private var pendingInstallResult: ((Boolean) -> Unit)? = null
+    private var pendingUninstallPackage: String? = null
+    private var pendingUninstallResult: ((Boolean) -> Unit)? = null
     private var pendingQueryPackage: String? = null
     private var activeQueryToken: String? = null
     private var activeQueryHostApp: RokidHostApp? = null
@@ -52,10 +54,15 @@ class CxrLHiRokidSession(
     private var cxrlConnected = false
     private var glassBtConnected = false
     private var uploadStarted = false
+    private var uninstallStarted = false
     private var queryStarted = false
     private var timeoutJob: Job? = null
 
     fun hasAuthorization(): Boolean = !token.isNullOrBlank()
+
+    fun ensureGlassesOperationReady(): Boolean {
+        return hasGlassesOperationPrerequisites(hostApp, requestAuthorizationIfMissing = true)
+    }
 
     fun selectHostApp(nextHostApp: RokidHostApp) {
         if (hostApp == nextHostApp) return
@@ -120,23 +127,11 @@ class CxrLHiRokidSession(
 
     fun installApk(apkFile: File, onInstallResult: ((Boolean) -> Unit)? = null) {
         val targetHostApp = hostApp
-        if (!isHostAppInstalled(targetHostApp)) {
-            onStatus("Install ${targetHostApp.displayName} on this phone first.")
+        if (!hasGlassesOperationPrerequisites(targetHostApp, requestAuthorizationIfMissing = true)) {
             onInstallResult?.invoke(false)
             return
         }
-        if (!isWifiEnabled()) {
-            onStatus("Turn on phone Wi-Fi first. ${targetHostApp.displayName} needs it for the glasses hotspot.")
-            onInstallResult?.invoke(false)
-            return
-        }
-        val authToken = token
-        if (authToken.isNullOrBlank()) {
-            onStatus("Press Authorize ${targetHostApp.shortLabel} first.")
-            requestAuthorization()
-            onInstallResult?.invoke(false)
-            return
-        }
+        val authToken = token.orEmpty()
 
         onBusyChanged(true)
         runCatching {
@@ -150,6 +145,18 @@ class CxrLHiRokidSession(
         }
     }
 
+    fun uninstallApp(packageName: String, onUninstallResult: ((Boolean) -> Unit)? = null) {
+        val targetHostApp = hostApp
+        if (!hasGlassesOperationPrerequisites(targetHostApp, requestAuthorizationIfMissing = true)) {
+            onUninstallResult?.invoke(false)
+            return
+        }
+        val authToken = token.orEmpty()
+
+        onBusyChanged(true)
+        connectAndUninstall(authToken, targetHostApp, packageName, onUninstallResult)
+    }
+
     fun queryInstalledApps(
         packageNames: List<String>,
         onResult: (String, Boolean) -> Unit,
@@ -160,23 +167,11 @@ class CxrLHiRokidSession(
             onComplete()
             return
         }
-        if (!isHostAppInstalled(targetHostApp)) {
-            onStatus("Install ${targetHostApp.displayName} on this phone first.")
+        if (!hasGlassesOperationPrerequisites(targetHostApp, requestAuthorizationIfMissing = true)) {
             onComplete()
             return
         }
-        if (!isWifiEnabled()) {
-            onStatus("Turn on phone Wi-Fi first. ${targetHostApp.displayName} needs it for the glasses hotspot.")
-            onComplete()
-            return
-        }
-        val authToken = token
-        if (authToken.isNullOrBlank()) {
-            onStatus("Press Authorize ${targetHostApp.shortLabel} first.")
-            requestAuthorization()
-            onComplete()
-            return
-        }
+        val authToken = token.orEmpty()
 
         cleanup()
         queryQueue = ArrayDeque(packageNames.distinct())
@@ -193,12 +188,15 @@ class CxrLHiRokidSession(
         cxrLink = null
         pendingUpload = null
         pendingInstallResult = null
+        pendingUninstallPackage = null
+        pendingUninstallResult = null
         pendingQueryPackage = null
         activeQueryToken = null
         activeQueryHostApp = null
         cxrlConnected = false
         glassBtConnected = false
         uploadStarted = false
+        uninstallStarted = false
         queryStarted = false
         notifyConnectionChanged()
     }
@@ -344,6 +342,79 @@ class CxrLHiRokidSession(
         }
     }
 
+    private fun connectAndUninstall(
+        authToken: String,
+        targetHostApp: RokidHostApp,
+        packageName: String,
+        onUninstallResult: ((Boolean) -> Unit)?,
+    ) {
+        cleanup()
+        val link = CXRLink(activity.applicationContext).also { newLink ->
+            newLink.setCXRLinkCbk(object : ICXRLinkCbk {
+                override fun onCXRLConnected(connected: Boolean) {
+                    activity.runOnUiThread {
+                        cxrlConnected = connected
+                        onStatus("CXR-L service connected: $connected")
+                        notifyConnectionChanged()
+                        maybeUninstallPending()
+                    }
+                }
+
+                override fun onGlassBtConnected(connected: Boolean) {
+                    activity.runOnUiThread {
+                        glassBtConnected = connected
+                        onStatus("Glasses Bluetooth connected: $connected")
+                        notifyConnectionChanged()
+                        maybeUninstallPending()
+                    }
+                }
+
+                override fun onGlassAiAssistStart() = Unit
+                override fun onGlassAiAssistStop() = Unit
+            })
+            cxrLink = newLink
+            newLink
+        }
+
+        pendingUninstallPackage = packageName
+        pendingUninstallResult = onUninstallResult
+        pendingUpload = null
+        pendingQueryPackage = null
+        cxrlConnected = false
+        glassBtConnected = false
+        uploadStarted = false
+        uninstallStarted = false
+        queryStarted = false
+        timeoutJob = activity.lifecycleScope.launch {
+            delay(60_000)
+            if (pendingUninstallPackage == packageName) {
+                onStatus("Timed out uninstalling $packageName from glasses.")
+                cleanup()
+                onBusyChanged(false)
+                onUninstallResult?.invoke(false)
+            }
+        }
+
+        val configured = link.configCXRSession(
+            CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, packageName),
+        )
+        if (!configured) {
+            pendingUninstallPackage = null
+            onBusyChanged(false)
+            onStatus("Failed to configure uninstall for $packageName.")
+            onUninstallResult?.invoke(false)
+            return
+        }
+
+        onStatus("Binding to ${targetHostApp.displayName} service...")
+        if (!bindRokidHostService(link, targetHostApp, authToken)) {
+            pendingUninstallPackage = null
+            onBusyChanged(false)
+            onStatus("${targetHostApp.displayName} service bind failed. Open it, then retry.")
+            onUninstallResult?.invoke(false)
+        }
+    }
+
     private fun maybeUploadPending() {
         val apkFile = pendingUpload ?: return
         if (uploadStarted || !cxrlConnected || !glassBtConnected) return
@@ -365,6 +436,35 @@ class CxrLHiRokidSession(
             }
 
             override fun onUnInstallAppResult(success: Boolean) = Unit
+            override fun onOpenAppResult(success: Boolean) = Unit
+            override fun onStopAppResult(success: Boolean) = Unit
+            override fun onGlassAppResume(resumed: Boolean) = Unit
+            override fun onQueryAppResult(installed: Boolean) = Unit
+        })
+    }
+
+    private fun maybeUninstallPending() {
+        val packageName = pendingUninstallPackage ?: return
+        if (uninstallStarted || !cxrlConnected || !glassBtConnected) return
+
+        uninstallStarted = true
+        onStatus("CXR-L ready. Uninstalling $packageName from glasses...")
+        cxrLink?.appUninstall(object : IGlassAppCbk {
+            override fun onInstallAppResult(success: Boolean) = Unit
+
+            override fun onUnInstallAppResult(success: Boolean) {
+                activity.runOnUiThread {
+                    timeoutJob?.cancel()
+                    timeoutJob = null
+                    pendingUninstallPackage = null
+                    uninstallStarted = false
+                    onStatus(if (success) "Glasses uninstall succeeded." else "Glasses uninstall failed.")
+                    onBusyChanged(false)
+                    pendingUninstallResult?.invoke(success)
+                    pendingUninstallResult = null
+                }
+            }
+
             override fun onOpenAppResult(success: Boolean) = Unit
             override fun onStopAppResult(success: Boolean) = Unit
             override fun onGlassAppResume(resumed: Boolean) = Unit
@@ -431,6 +531,26 @@ class CxrLHiRokidSession(
     private fun isWifiEnabled(): Boolean {
         val wifiManager = activity.applicationContext.getSystemService(WifiManager::class.java)
         return wifiManager?.isWifiEnabled == true
+    }
+
+    private fun hasGlassesOperationPrerequisites(
+        targetHostApp: RokidHostApp,
+        requestAuthorizationIfMissing: Boolean,
+    ): Boolean {
+        if (!isHostAppInstalled(targetHostApp)) {
+            onStatus("Install ${targetHostApp.displayName} on this phone first.")
+            return false
+        }
+        if (!isWifiEnabled()) {
+            onStatus("Turn on phone Wi-Fi first. ${targetHostApp.displayName} needs it for the glasses hotspot.")
+            return false
+        }
+        if (token.isNullOrBlank()) {
+            onStatus("Press Authorize ${targetHostApp.shortLabel} first.")
+            if (requestAuthorizationIfMissing) requestAuthorization()
+            return false
+        }
+        return true
     }
 
     private fun readPackageName(apkFile: File): String {

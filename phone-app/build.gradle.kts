@@ -7,7 +7,15 @@ plugins {
 fun String.asBuildConfigString(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
 val defaultRegistryUrl = "https://raw.githubusercontent.com/Anezium/RokidBrew-Registry/main/dist/apps.v1.json"
-val registryUrl = providers.gradleProperty("rokidbrewRegistryUrl").orElse(defaultRegistryUrl).get()
+val registryUrl = providers.gradleProperty("rokidbrewRegistryUrl")
+val debugRegistryUrl = providers.gradleProperty("rokidbrewDebugRegistryUrl")
+    .orElse(registryUrl)
+    .orElse(defaultRegistryUrl)
+    .get()
+val releaseRegistryUrl = providers.gradleProperty("rokidbrewReleaseRegistryUrl")
+    .orElse(registryUrl)
+    .orElse(defaultRegistryUrl)
+    .get()
 
 android {
     namespace = "com.rokidbrew.phone"
@@ -21,16 +29,17 @@ android {
         targetSdk = 36
         versionCode = 9
         versionName = "0.1.8"
-        buildConfigField("String", "ROKIDBREW_REGISTRY_URL", "\"${registryUrl.asBuildConfigString()}\"")
         manifestPlaceholders["cleartextTrafficPermitted"] = "false"
     }
 
     buildTypes {
         debug {
+            buildConfigField("String", "ROKIDBREW_REGISTRY_URL", "\"${debugRegistryUrl.asBuildConfigString()}\"")
             manifestPlaceholders["cleartextTrafficPermitted"] = "true"
         }
 
         release {
+            buildConfigField("String", "ROKIDBREW_REGISTRY_URL", "\"${releaseRegistryUrl.asBuildConfigString()}\"")
             isMinifyEnabled = false
             manifestPlaceholders["cleartextTrafficPermitted"] = "false"
             proguardFiles(

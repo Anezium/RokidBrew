@@ -1,6 +1,10 @@
 package com.rokidbrew.phone
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Icon
@@ -55,9 +60,11 @@ internal fun DetailSheet(
     onToggleStatus: () -> Unit,
     onDismiss: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
+    onUninstall: (BrewApp, String) -> Unit,
 ) {
     if (app == null) return
     var expandedScreenshotIndex by remember(app.id) { mutableStateOf<Int?>(null) }
+    var uninstallExpanded by remember(app.id) { mutableStateOf(false) }
     val phoneInstallState = phoneInstallStateFor(app, phoneInstallStates)
     val glassesInstallState = rememberGlassesInstallState(app, glassesInstallStates)
     val detailScrollState = rememberScrollState()
@@ -81,7 +88,29 @@ internal fun DetailSheet(
                 .navigationBarsPadding()
                 .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 132.dp),
         ) {
-            DetailTopBar(onDismiss = onDismiss)
+            DetailTopBar(
+                uninstallAvailable = app.hasTarget("phone") || app.hasTarget("glasses"),
+                uninstallExpanded = uninstallExpanded,
+                onToggleUninstall = { uninstallExpanded = !uninstallExpanded },
+                onDismiss = onDismiss,
+            )
+            AnimatedVisibility(
+                visible = uninstallExpanded,
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                DetailUninstallActions(
+                    app = app,
+                    busy = busy,
+                    phoneInstallState = phoneInstallState,
+                    glassesInstallState = glassesInstallState,
+                    onUninstall = { target ->
+                        uninstallExpanded = false
+                        onUninstall(app, target)
+                    },
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             DetailHeroHeader(app = app, iconLoader = iconLoader, mediaLoader = mediaLoader)
             DetailScreenshotStrip(
                 app = app,
@@ -126,7 +155,12 @@ internal fun DetailSheet(
     }
 }
 @Composable
-internal fun DetailTopBar(onDismiss: () -> Unit) {
+internal fun DetailTopBar(
+    onDismiss: () -> Unit,
+    uninstallAvailable: Boolean = false,
+    uninstallExpanded: Boolean = false,
+    onToggleUninstall: () -> Unit = {},
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -148,6 +182,20 @@ internal fun DetailTopBar(onDismiss: () -> Unit) {
         Spacer(Modifier.width(9.dp))
         BrandTitle(fontSize = 21)
         Spacer(Modifier.weight(1f))
+        Icon(
+            Icons.Outlined.Delete,
+            null,
+            tint = when {
+                !uninstallAvailable -> BrewDim
+                uninstallExpanded -> BrewRed
+                else -> BrewMuted
+            },
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(enabled = uninstallAvailable, onClick = onToggleUninstall)
+                .padding(4.dp),
+        )
     }
 }
 @Composable
@@ -200,6 +248,54 @@ internal fun DetailHeroHeader(app: BrewApp, iconLoader: IconLoader, mediaLoader:
         }
     }
 }
+
+@Composable
+internal fun DetailUninstallActions(
+    app: BrewApp,
+    busy: Boolean,
+    phoneInstallState: MainActivity.InstallState,
+    glassesInstallState: MainActivity.InstallState,
+    onUninstall: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BrewPanel.copy(alpha = 0.82f))
+            .border(1.dp, BrewBorderHi, RoundedCornerShape(10.dp))
+            .padding(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (app.hasTarget("phone")) {
+            StoreActionButton(
+                label = "Uninstall phone",
+                primary = false,
+                destructive = true,
+                enabled = !busy && canUninstall(phoneInstallState),
+                icon = { Icon(Icons.Outlined.Delete, null, modifier = Modifier.size(18.dp)) },
+                onClick = { onUninstall("phone") },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+            )
+        }
+        if (app.hasTarget("glasses")) {
+            StoreActionButton(
+                label = "Uninstall glasses",
+                primary = false,
+                destructive = true,
+                enabled = !busy && canUninstall(glassesInstallState),
+                icon = { Icon(Icons.Outlined.Visibility, null, modifier = Modifier.size(18.dp)) },
+                onClick = { onUninstall("glasses") },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+            )
+        }
+    }
+}
+
 @Composable
 internal fun DetailInstallActions(
     app: BrewApp,

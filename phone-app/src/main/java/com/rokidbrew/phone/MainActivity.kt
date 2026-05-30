@@ -33,12 +33,13 @@ private const val PREFS_NAME = "rokidbrew_preferences"
 private const val PREF_ROKID_HOST_APP = "rokid_host_app"
 
 class MainActivity : AppCompatActivity() {
-    enum class InstallState { UNKNOWN, NOT_INSTALLED, INSTALLED, UPDATE_AVAILABLE }
+    enum class InstallState { UNKNOWN, NOT_INSTALLED, INSTALLED, INSTALLED_UNKNOWN_VERSION, UPDATE_AVAILABLE }
 
     private lateinit var cxrL: CxrLHiRokidSession
     private lateinit var downloader: ApkDownloader
     private lateinit var iconLoader: IconLoader
     private lateinit var mediaLoader: MediaLoader
+    private lateinit var installCache: UserInstallCache
 
     private var apps by mutableStateOf(emptyList<BrewApp>())
     private var busy by mutableStateOf(false)
@@ -94,6 +95,7 @@ class MainActivity : AppCompatActivity() {
         downloader = ApkDownloader(this)
         iconLoader = IconLoader(this)
         mediaLoader = MediaLoader(this)
+        installCache = UserInstallCache(this)
         selectedHostApp = loadSelectedHostApp()
         cxrL = CxrLHiRokidSession(
             activity = this,
@@ -103,6 +105,7 @@ class MainActivity : AppCompatActivity() {
             initialHostApp = selectedHostApp,
         )
         apps = BrewIndex.loadInitial(this)
+        refreshCachedGlassesInstallStates(apps)
         refreshPhoneInstallStates(apps)
 
         setContent {
@@ -133,6 +136,14 @@ class MainActivity : AppCompatActivity() {
                             runWithPrerequisites { installArtifact(app, target) }
                         } else {
                             installArtifact(app, target)
+                        }
+                    },
+                    onCheckGlassesInstall = ::checkGlassesInstallStateIfNeeded,
+                    onUninstall = { app, target ->
+                        if (target == "glasses") {
+                            runWithPrerequisites { uninstallArtifact(app, target) }
+                        } else {
+                            uninstallArtifact(app, target)
                         }
                     },
                     selfUpdateState = selfUpdateState,
@@ -217,6 +228,7 @@ class MainActivity : AppCompatActivity() {
                 BrewIndex.refresh(this@MainActivity)
             }.onSuccess { refresh ->
                 apps = refresh.apps
+                refreshCachedGlassesInstallStates(refresh.apps)
                 refreshPhoneInstallStates(refresh.apps)
                 installCheckTick += 1
                 val remoteCode = refresh.brewVersionCode ?: 0L
@@ -295,16 +307,79 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshGlassesInstallStates(targetApps: List<BrewApp> = apps) {
-        val packageNames = targetApps
+    private fun checkGlassesInstallStateIfNeeded(app: BrewApp) {
+        val artifact = app.artifactFor("glasses") ?: return
+        val packageName = artifact.packageName?.takeIf { it.isNotBlank() } ?: return
+        if (glassesInstallStates.containsKey(packageName)) return
+
+        cachedGlassesInstallState(app, artifact)?.let { cachedState ->
+            glassesInstallStates[packageName] = cachedState
+            return
+        }
+
+        if (busy || !cxrL.hasAuthorization()) return
+        refreshGlassesInstallStates(listOf(app))
+    }
+
+    private fun refreshCachedGlassesInstallStates(targetApps: List<BrewApp> = apps) {
+        val knownPackages = targetApps
             .mapNotNull { it.artifactFor("glasses")?.packageName?.takeIf(String::isNotBlank) }
-            .distinct()
+            .toSet()
+        glassesInstallStates.keys
+            .filterNot(knownPackages::contains)
+            .forEach(glassesInstallStates::remove)
+
+        targetApps.forEach { app ->
+            val artifact = app.artifactFor("glasses") ?: return@forEach
+            val packageName = artifact.packageName?.takeIf { it.isNotBlank() } ?: return@forEach
+            cachedGlassesInstallState(app, artifact)?.let { state ->
+                glassesInstallStates[packageName] = state
+            }
+        }
+    }
+
+    private fun cachedGlassesInstallState(app: BrewApp, artifact: BrewArtifact): InstallState? {
+        val packageName = artifact.packageName?.takeIf { it.isNotBlank() } ?: return null
+        val record = installCache.getGlasses(packageName) ?: return null
+        if (!record.versionKnown) return InstallState.INSTALLED_UNKNOWN_VERSION
+        val registryVersionCode = artifact.versionCode
+        if (registryVersionCode != null && record.versionCode != null) {
+            return if (record.versionCode < registryVersionCode) InstallState.UPDATE_AVAILABLE else InstallState.INSTALLED
+        }
+        val cachedVersionName = record.versionName?.takeIf { it.isNotBlank() }
+        return if (cachedVersionName != null && cachedVersionName != app.version) {
+            InstallState.UPDATE_AVAILABLE
+        } else {
+            InstallState.INSTALLED
+        }
+    }
+
+    private fun refreshGlassesInstallStates(targetApps: List<BrewApp> = apps) {
+        val appsByPackage = targetApps
+            .mapNotNull { app ->
+                val artifact = app.artifactFor("glasses") ?: return@mapNotNull null
+                val packageName = artifact.packageName?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+                packageName to (app to artifact)
+            }
+            .toMap()
+        val packageNames = appsByPackage.keys.toList()
         if (packageNames.isEmpty() || !cxrL.hasAuthorization()) return
 
         cxrL.queryInstalledApps(
             packageNames = packageNames,
             onResult = { packageName, installed ->
-                glassesInstallStates[packageName] = if (installed) InstallState.INSTALLED else InstallState.NOT_INSTALLED
+                val appAndArtifact = appsByPackage[packageName]
+                if (installed && appAndArtifact != null) {
+                    val (app, artifact) = appAndArtifact
+                    if (installCache.getGlasses(packageName) == null) {
+                        installCache.recordGlassesDiscovered(app, artifact)
+                    }
+                    glassesInstallStates[packageName] =
+                        cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED_UNKNOWN_VERSION
+                } else {
+                    installCache.removeGlasses(packageName)
+                    glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                }
                 installCheckTick += 1
             },
             onComplete = {
@@ -348,6 +423,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "No $target artifact for ${app.name}", Toast.LENGTH_SHORT).show()
             return
         }
+        if (target == "glasses" && !cxrL.ensureGlassesOperationReady()) return
 
         lifecycleScope.launch {
             val progressKey = "${app.id}:$target"
@@ -364,10 +440,19 @@ class MainActivity : AppCompatActivity() {
                 log("Downloaded ${file.name} (${file.length() / 1024} KB).")
                 if (target == "glasses") {
                     cxrL.installApk(file) { installed ->
-                        artifact.packageName?.takeIf { it.isNotBlank() }?.let {
-                            glassesInstallStates[it] = if (installed) InstallState.INSTALLED else InstallState.NOT_INSTALLED
+                        artifact.packageName?.takeIf { it.isNotBlank() }?.let { packageName ->
+                            if (installed) {
+                                installCache.recordGlassesInstall(app, artifact)
+                                glassesInstallStates[packageName] =
+                                    cachedGlassesInstallState(app, artifact) ?: InstallState.INSTALLED
+                            } else {
+                                installCache.removeGlasses(packageName)
+                                glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                            }
                             installCheckTick += 1
                         }
+                        downloadProgress.remove(progressKey)
+                        updateBusy(false)
                     }
                 } else {
                     updateBusy(false)
@@ -379,6 +464,28 @@ class MainActivity : AppCompatActivity() {
                 downloadProgress.remove(progressKey)
                 updateBusy(false)
             }
+        }
+    }
+
+    private fun uninstallArtifact(app: BrewApp, target: String) {
+        if (busy) return
+        val artifact = app.artifactFor(target)
+        val packageName = artifact?.packageName?.takeIf { it.isNotBlank() }
+        if (artifact == null || packageName == null) {
+            Toast.makeText(this, "No $target package for ${app.name}", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (target == "glasses") {
+            cxrL.uninstallApp(packageName) { uninstalled ->
+                if (uninstalled) {
+                    installCache.removeGlasses(packageName)
+                    glassesInstallStates[packageName] = InstallState.NOT_INSTALLED
+                    installCheckTick += 1
+                }
+            }
+        } else {
+            PhonePackageInstallHelper.requestUninstall(this, packageName, app.name, ::log)
         }
     }
 

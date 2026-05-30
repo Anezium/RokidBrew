@@ -159,7 +159,14 @@ internal fun rememberInstallState(app: BrewApp, target: String, installCheckTick
 internal fun installButtonLabel(target: String, state: MainActivity.InstallState): String {
     return when (state) {
         MainActivity.InstallState.INSTALLED -> "Installed"
+        MainActivity.InstallState.INSTALLED_UNKNOWN_VERSION -> if (target == "glasses") "Install latest" else "Install $target"
         MainActivity.InstallState.UPDATE_AVAILABLE -> "Update $target"
         else -> "Install $target"
     }
+}
+
+internal fun canUninstall(state: MainActivity.InstallState): Boolean {
+    return state == MainActivity.InstallState.INSTALLED ||
+        state == MainActivity.InstallState.INSTALLED_UNKNOWN_VERSION ||
+        state == MainActivity.InstallState.UPDATE_AVAILABLE
 }

@@ -291,13 +291,15 @@ internal fun StoreActionButton(
     label: String,
     primary: Boolean,
     enabled: Boolean,
+    destructive: Boolean = false,
     icon: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val border = if (primary) BrewGreen else BrewGreen
-    val background = if (primary) BrewGreen else Color.Transparent
-    val contentColor = if (primary) BrewBg else BrewGreen
+    val accent = if (destructive) BrewRed else BrewGreen
+    val border = accent
+    val background = if (primary) accent else Color.Transparent
+    val contentColor = if (primary) BrewBg else accent
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))

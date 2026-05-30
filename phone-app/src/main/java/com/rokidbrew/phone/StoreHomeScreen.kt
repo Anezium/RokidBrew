@@ -80,6 +80,8 @@ internal fun BrewPhoneApp(
     onHostAppSelected: (RokidHostApp) -> Unit,
     onAuthorize: () -> Unit,
     onInstall: (BrewApp, String) -> Unit,
+    onCheckGlassesInstall: (BrewApp) -> Unit,
+    onUninstall: (BrewApp, String) -> Unit,
     selfUpdateState: BrewSelfUpdateState,
     onSelfUpdate: () -> Unit,
 ) {
@@ -128,6 +130,10 @@ internal fun BrewPhoneApp(
 
     LaunchedEffect(showingFeaturedList) {
         listState.scrollToItem(0)
+    }
+
+    LaunchedEffect(selectedApp?.id) {
+        selectedApp?.takeIf { it.hasTarget("glasses") }?.let(onCheckGlassesInstall)
     }
 
     Box(
@@ -294,6 +300,7 @@ internal fun BrewPhoneApp(
                 onToggleStatus = onToggleStatus,
                 onDismiss = { selectedApp = null },
                 onInstall = onInstall,
+                onUninstall = onUninstall,
             )
         }
 
@@ -311,6 +318,7 @@ internal fun BrewPhoneApp(
                 onUpdate = onSelfUpdate,
             )
         }
+
     }
 }
 
@@ -631,6 +639,7 @@ internal fun StoreAppRow(
     val artifact = target?.let(app::artifactFor)
     val actionLabel = when (targetState) {
         MainActivity.InstallState.INSTALLED -> "Installed"
+        MainActivity.InstallState.INSTALLED_UNKNOWN_VERSION -> "Latest"
         MainActivity.InstallState.UPDATE_AVAILABLE -> "Update"
         else -> "Install"
     }

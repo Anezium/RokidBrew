@@ -1,7 +1,6 @@
 package com.rokidbrew.phone
 
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import java.io.File
@@ -9,6 +8,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+
+private const val MEDIA_MAX_DIMENSION_PX = 1080
 
 class MediaLoader(private val context: Context) {
     private val cache = ConcurrentHashMap<String, Drawable>()
@@ -25,7 +26,9 @@ class MediaLoader(private val context: Context) {
         if (missing.contains(key)) return null
         return runCatching {
             context.assets.open("media/$assetName").use { input ->
-                BitmapDrawable(context.resources, BitmapFactory.decodeStream(input))
+                decodeSampledBitmap(input.readBytes(), MEDIA_MAX_DIMENSION_PX)?.let { bitmap ->
+                    BitmapDrawable(context.resources, bitmap)
+                }
             }
         }.getOrNull().also { drawable ->
             if (drawable == null) missing.add(key) else cache[key] = drawable
@@ -40,7 +43,9 @@ class MediaLoader(private val context: Context) {
         return runCatching {
             val file = cachedImageFile(url)
             if (!file.exists()) download(url, file)
-            BitmapDrawable(context.resources, BitmapFactory.decodeFile(file.absolutePath))
+            decodeSampledBitmap(file, MEDIA_MAX_DIMENSION_PX)?.let { bitmap ->
+                BitmapDrawable(context.resources, bitmap)
+            }
         }.getOrNull().also { drawable ->
             if (drawable == null) missing.add(key) else cache[key] = drawable
         }

@@ -25,6 +25,33 @@ data class BrewScreenshot(
     val url: String?,
 )
 
+data class BrewListing(
+    val about: String?,
+    val descriptionMarkdown: String?,
+)
+
+data class BrewRelease(
+    val version: String?,
+    val date: String?,
+    val sourceReleaseUrl: String?,
+    val notes: String?,
+    val changes: List<String>,
+)
+
+data class BrewSelfUpdateState(
+    val currentVersion: String = "",
+    val currentVersionCode: Long = 0L,
+    val latestVersion: String = "",
+    val latestVersionCode: Long? = null,
+    val apkUrl: String = "",
+    val releaseUrl: String = "",
+    val notes: String = "",
+    val changes: List<String> = emptyList(),
+    val available: Boolean = false,
+    val downloading: Boolean = false,
+    val downloadPercent: Int = 0,
+)
+
 data class BrewApp(
     val id: String,
     val name: String,
@@ -46,6 +73,8 @@ data class BrewApp(
     val isNew: Boolean,
     val phoneRequired: Boolean,
     val artifacts: List<BrewArtifact>,
+    val listing: BrewListing?,
+    val releases: List<BrewRelease>,
 ) {
     val screenshotAsset: String?
         get() = screenshotAssets.firstOrNull()
@@ -58,6 +87,9 @@ data class BrewApp(
     fun hasTarget(target: String): Boolean = artifactFor(target) != null
     fun isPhoneSection(): Boolean = type == "combo" || type == "phone" || hasTarget("phone") || phoneRequired
     fun isFeatured(): Boolean = featured || featuredRank != null
+    fun aboutText(): String = listing?.about?.takeIf { it.isNotBlank() }
+        ?: listing?.descriptionMarkdown?.takeIf { it.isNotBlank() }
+        ?: description
     fun screenshotAt(index: Int): BrewScreenshot = BrewScreenshot(
         assetName = screenshotAssets.getOrNull(index),
         url = screenshotUrls.getOrNull(index),
@@ -70,6 +102,9 @@ data class BrewIndexRefresh(
     val brewVersion: String?,
     val brewVersionCode: Long?,
     val brewApkUrl: String?,
+    val brewReleaseUrl: String?,
+    val brewNotes: String?,
+    val brewChanges: List<String>,
 )
 
 private data class BrewIndexRaw(
@@ -78,10 +113,12 @@ private data class BrewIndexRaw(
     val brewVersion: String?,
     val brewVersionCode: Long?,
     val brewApkUrl: String?,
+    val brewReleaseUrl: String?,
+    val brewNotes: String?,
+    val brewChanges: List<String>,
 )
 
 object BrewIndex {
-    private const val CACHE_FILE = "apps.v2.json"
     private val remoteUrls = listOf(
         BuildConfig.ROKIDBREW_REGISTRY_URL,
     )
@@ -98,7 +135,7 @@ object BrewIndex {
     }
 
     fun loadCached(context: Context): List<BrewApp> {
-        val file = File(context.filesDir, CACHE_FILE)
+        val file = cacheFile(context)
         if (!file.exists()) return emptyList()
         return runCatching { parse(file.readText()).apps }.getOrDefault(emptyList())
     }
@@ -111,19 +148,27 @@ object BrewIndex {
                 val parsed = parse(raw)
                 val apps = mergeBundledMedia(parsed.apps, loadBundled(context))
                 require(apps.isNotEmpty()) { "Remote registry is empty" }
-                File(context.filesDir, CACHE_FILE).writeText(raw)
+                cacheFile(context).writeText(raw)
                 return@withContext BrewIndexRefresh(
                     apps = apps,
                     sourceUrl = url,
                     brewVersion = parsed.brewVersion,
                     brewVersionCode = parsed.brewVersionCode,
                     brewApkUrl = parsed.brewApkUrl,
+                    brewReleaseUrl = parsed.brewReleaseUrl,
+                    brewNotes = parsed.brewNotes,
+                    brewChanges = parsed.brewChanges,
                 )
             }.onFailure { error ->
                 lastError = error
             }
         }
         throw lastError ?: IllegalStateException("No registry endpoint available")
+    }
+
+    private fun cacheFile(context: Context): File {
+        val suffix = Integer.toHexString(BuildConfig.ROKIDBREW_REGISTRY_URL.hashCode())
+        return File(context.filesDir, "apps.$suffix.json")
     }
 
     private fun fetch(url: String): String {
@@ -151,6 +196,8 @@ object BrewIndex {
                 iconUrl = app.iconUrl ?: bundledApp.iconUrl,
                 screenshotAssets = app.screenshotAssets.ifEmpty { bundledApp.screenshotAssets },
                 screenshotUrls = app.screenshotUrls.ifEmpty { bundledApp.screenshotUrls },
+                listing = app.listing ?: bundledApp.listing,
+                releases = app.releases.ifEmpty { bundledApp.releases },
             )
         }
     }
@@ -180,6 +227,7 @@ object BrewIndex {
                 val sourceUrl = app.optString("sourceUrl").takeIf { it.isNotBlank() } ?: artifacts.inferredSourceUrl()
                 val publishedAt = app.optString("publishedAt").takeIf { it.isNotBlank() }
                 val newUntil = app.optString("newUntil").takeIf { it.isNotBlank() }
+                val listing = app.listing()
                 add(
                     BrewApp(
                         id = app.getString("id"),
@@ -202,6 +250,8 @@ object BrewIndex {
                         isNew = isNewApp(publishedAt, newUntil),
                         phoneRequired = app.optBoolean("phoneRequired", false),
                         artifacts = artifacts,
+                        listing = listing,
+                        releases = app.releases(),
                     ),
                 )
             }
@@ -212,6 +262,9 @@ object BrewIndex {
             brewVersion = root.optString("brewVersion").takeIf { it.isNotBlank() },
             brewVersionCode = root.optLong("brewVersionCode").takeIf { it > 0L },
             brewApkUrl = root.optString("brewApkUrl").takeIf { it.isNotBlank() },
+            brewReleaseUrl = root.optString("brewReleaseUrl").takeIf { it.isNotBlank() },
+            brewNotes = root.optString("brewNotes").takeIf { it.isNotBlank() },
+            brewChanges = root.stringList("brewChanges"),
         )
     }
 
@@ -250,6 +303,45 @@ object BrewIndex {
         return buildList {
             for (i in 0 until urls.length()) {
                 urls.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }
+
+    private fun JSONObject.listing(): BrewListing? {
+        val listing = optJSONObject("listing") ?: return null
+        val about = listing.optString("about").takeIf { it.isNotBlank() }
+        val descriptionMarkdown = listing.optString("descriptionMarkdown").takeIf { it.isNotBlank() }
+        if (about == null && descriptionMarkdown == null) return null
+        return BrewListing(
+            about = about,
+            descriptionMarkdown = descriptionMarkdown,
+        )
+    }
+
+    private fun JSONObject.releases(): List<BrewRelease> {
+        val releases = optJSONArray("releases") ?: return emptyList()
+        return buildList {
+            for (i in 0 until releases.length()) {
+                val release = releases.optJSONObject(i) ?: continue
+                add(
+                    BrewRelease(
+                        version = release.optString("version").takeIf { it.isNotBlank() },
+                        date = release.optString("date").takeIf { it.isNotBlank() },
+                        sourceReleaseUrl = release.optString("sourceReleaseUrl").takeIf { it.isNotBlank() },
+                        notes = release.optString("notes").takeIf { it.isNotBlank() }
+                            ?: release.optString("notesMarkdown").takeIf { it.isNotBlank() },
+                        changes = release.stringList("changes"),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun JSONObject.stringList(name: String): List<String> {
+        val values = optJSONArray(name) ?: return emptyList()
+        return buildList {
+            for (i in 0 until values.length()) {
+                values.optString(i).takeIf { it.isNotBlank() }?.let(::add)
             }
         }
     }

@@ -216,7 +216,9 @@ class MainActivity : AppCompatActivity() {
         ) {
             attributes.preferredDisplayModeId = preferredMode.modeId
             attributes.preferredRefreshRate = fastestMode.refreshRate
-            attributes.setFrameRatePowerSavingsBalanced(false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                attributes.setFrameRatePowerSavingsBalanced(false)
+            }
             window.attributes = attributes
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {

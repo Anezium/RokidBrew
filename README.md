@@ -26,7 +26,7 @@ Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, insta
 
 Get the latest APK from [GitHub Releases](https://github.com/Anezium/RokidBrew/releases/latest).
 
-Current release: [RokidBrew v0.2.0](https://github.com/Anezium/RokidBrew/releases/tag/v0.2.0).
+Current release: [RokidBrew v0.2.1](https://github.com/Anezium/RokidBrew/releases/tag/v0.2.1).
 
 ## What it does
 

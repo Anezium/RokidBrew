@@ -13,6 +13,7 @@ import com.rokid.cxr.link.CXRLink
 import com.rokid.cxr.link.callbacks.ICXRLinkCbk
 import com.rokid.cxr.link.callbacks.IGlassAppCbk
 import com.rokid.cxr.link.utils.CxrDefs
+import com.rokid.cxr.link.utils.GlassInfo
 import com.rokid.sprite.aiapp.externalapp.auth.AuthResult
 import com.rokid.sprite.aiapp.externalapp.auth.AuthorizationHelper
 import java.io.File
@@ -96,7 +97,7 @@ class CxrLHiRokidSession(
     }
 
     fun handleAuthorizationResult(resultCode: Int, data: Intent?) {
-        when (val result = AuthorizationHelper.INSTANCE.parseAuthorizationResult(resultCode, data)) {
+        when (val result = AuthorizationHelper.parseAuthorizationResult(resultCode, data)) {
             is AuthResult.AuthSuccess -> {
                 token = result.token
                 onStatus("${hostApp.displayName} authorization token received.")
@@ -325,8 +326,11 @@ class CxrLHiRokidSession(
                     }
                 }
 
+                override fun onGlassDeviceInfo(info: GlassInfo) = Unit
+                override fun onGlassWearingStatus(wearing: Boolean) = Unit
                 override fun onGlassAiAssistStart() = Unit
                 override fun onGlassAiAssistStop() = Unit
+                override fun onGlassAiInterrupt(interrupted: Boolean) = Unit
             })
             cxrLink = newLink
             newLink

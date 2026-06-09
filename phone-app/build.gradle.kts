@@ -27,8 +27,8 @@ android {
         applicationId = "com.rokidbrew.phone"
         minSdk = 28
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.2.1"
+        versionCode = 12
+        versionName = "0.2.2"
         manifestPlaceholders["cleartextTrafficPermitted"] = "false"
     }
 
@@ -69,7 +69,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation(files("libs/client-l-1.0.1.aar"))
+    implementation("com.rokid.cxr:client-l:1.0.3")
 
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

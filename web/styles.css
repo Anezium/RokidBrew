@@ -181,6 +181,10 @@ a:hover {
   padding-bottom: 42px;
 }
 
+.app-shell:focus {
+  outline: none;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

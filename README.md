@@ -6,6 +6,9 @@
 
 Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, install, and update community-made apps — directly from your phone.
 
+**🌐 Browse the store on the web → [rokidbrew.anezium.me](https://rokidbrew.anezium.me/)**
+
+[![Web Store](https://img.shields.io/badge/Web_Store-rokidbrew.anezium.me-9BE800)](https://rokidbrew.anezium.me/)
 [![Platform](https://img.shields.io/badge/Android-3DDC84?logo=android)](https://github.com/Anezium/RokidBrew)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0-7F52FF?logo=kotlin)](https://kotlinlang.org/)
 [![Compose](https://img.shields.io/badge/Jetpack_Compose-Material_3-4285F4?logo=jetpackcompose)](https://developer.android.com/compose)
@@ -26,7 +29,9 @@ Community app store for [Rokid AR glasses](https://www.rokid.com). Browse, insta
 
 Get the latest APK from [GitHub Releases](https://github.com/Anezium/RokidBrew/releases/latest).
 
-Current release: [RokidBrew v0.2.1](https://github.com/Anezium/RokidBrew/releases/tag/v0.2.1).
+Current release: [RokidBrew v0.2.2](https://github.com/Anezium/RokidBrew/releases/tag/v0.2.2).
+
+No phone at hand? Every app in the catalog can also be browsed and downloaded as an APK straight from the **[web store](https://rokidbrew.anezium.me/)** — same live registry, no install required.
 
 ## What it does
 

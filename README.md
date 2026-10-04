@@ -102,3 +102,9 @@ RokidBrew/
 ## Credits
 
 Built on top of the Rokid CXR-L SDK (`client-l`). Registry powered by the community at [RokidBrew-Registry](https://github.com/Anezium/RokidBrew-Registry).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+
+Contributions are accepted under the same license (Apache-2.0, section 5) — no CLA required.
